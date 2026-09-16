@@ -589,3 +589,125 @@ idempotency check. Timings: 8 s, 12 s, 11 s.
 **Remaining work:** connect a flight controller to pins 8/10/6 and confirm
 HEARTBEAT with `./test_serial.sh --listen 15`. Until that is done, the serial
 path has been proven only up to the port, not end to end.
+
+---
+
+## 10. Vendor documentation arrives — and changes the answer
+
+The Orange Pi Zero 3W user manual (281 pp.) and the V1.2 schematic (18 pp.) were
+obtained after the UART0 implementation was already working. They changed the
+right answer. Both are in `docs/vendor/` locally but are **not committed**
+(vendor copyright, 17 MB combined).
+
+Extraction note: both PDFs use CID-encoded fonts, so pulling literal strings out
+of the content streams yields glyph indices, not text. `poppler-utils`
+(`pdftotext -layout`) was required.
+
+### 10.1 What the manual says
+
+Section 3.16.5, *40 pin UART test*:
+
+> the Orange Pi Zero 3w can use three UART buses: UART2, UART6, and UART7.
+
+| UART BUS | RX = 40-pin | TX = 40-pin | dtbo |
+|---|---|---|---|
+| UART2 | PIN 13 | PIN 11 | `uart2` |
+| UART6 | PIN 23 | PIN 24 | `uart6` |
+| UART7 | PIN 18 | PIN 16 | `uart7` |
+
+**UART0 is not listed.** Section 2.11 documents it separately as the *debugging
+serial port*, on a dedicated "3Pin debugging serial port" connector.
+
+### 10.2 What the schematic says
+
+Page 18, `EXT I/O` — the 40-pin header:
+
+```
+ 7 GPCLK        UART_TX   8      CPU-TX  --R82 1K--> CPUX-TX
+ 9 GND          UART_RX  10      CPU-RX  --R83 1K--> CPUX-RX      CPU DEBUG
+11 GPIO      PWM/PCM_CLK 12      PB0
+13 GPIO          GND     14      PB1
+```
+
+and page 9, the SoC pin list:
+
+```
+PB9/UART0-TX/...    net: CPUX-TX
+PB10/UART0-RX/...   net: CPUX-RX
+PB0/UART2-TX/UART0-TX/SPI2-CS0/...
+PB1/UART2-RX/UART0-RX/SPI2-CLK/...
+```
+
+So the earlier empirical mapping was **correct**: header pins 8/10 are PB9/PB10 =
+UART0, which is why `gpio readall` labels them `TXD.0`/`RXD.0` at ALT2. But two
+facts were invisible from the board alone:
+
+1. **Pins 8/10 are the CPU DEBUG net**, joined to the separate 3-pin debug
+   header through 1 kΩ series resistors R82/R83. The port is shared.
+2. **U-Boot also prints to UART0 at 115200 on every boot.** `console=` in
+   `orangepiEnv.txt` only builds the *kernel* cmdline; it cannot silence the
+   bootloader. A flight controller on pins 8/10 therefore receives a burst of
+   boot text at every power-up. (Reasoned from the design — proving it needs a
+   USB-TTL adapter on the other end, which was not available.)
+
+Also note `PB0`/`PB1` carry **both** UART2 and UART0 alternate functions, which
+is why they idled high in `ALT14` before any overlay was applied.
+
+### 10.3 Decision: UART2 becomes the default
+
+UART2 (pins 11/13) avoids the bootloader noise and the shared debug net, and
+**keeps the serial console** — the only way to debug a board that will not boot,
+which matters once you start editing boot configuration. The cost is that the
+harness moves from pins 8/10 to 11/13.
+
+UART0 remains fully supported via `MLR_DEVICE=/dev/ttyS0`, and `install.sh` warns
+about the U-Boot noise when it is selected.
+
+`install.sh` was also taught to migrate *between* modes: selecting a non-UART0
+device now actively restores `console=both` / `earlycon=on` and unmasks the
+getty, instead of silently leaving the console disabled from a previous install.
+
+### 10.4 Gotcha #16 — a block-replacing edit silently dropped a step
+
+While restructuring section 3a, the replacement spanned from the `3a` marker to
+the `3b` marker — which **deleted the `3ab` udev block that lived between them**.
+The result: the udev rule stayed pinned to `ttyS0` while everything else moved to
+`ttyS2`, so the new port would have been root-only.
+
+It was caught only because the expected `udev rule installed:` line was missing
+from the run log. Same signature as gotcha #13: the script reported success while
+skipping a step, and the exit code was 0 both times. **On this project, the log
+has caught two bugs the exit status did not.**
+
+### 10.5 Verification after the switch
+
+```
+$ ls -l /dev/ttyS2
+crw-rw---- 1 root dialout 241, 2 /dev/ttyS2          # udev rule applied
+
+$ tr -d '\0' < /proc/device-tree/soc@3000000/uart@2502000/status
+okay                                                  # overlay applied
+
+$ journalctl -k | grep ttyS2
+uart-ng2: ttyS2 at MMIO 0x2502000 (irq = 111, base_baud = 1500000) is a SUNXI
+
+$ gpio readall | grep -E ' 11 | 13 '
+| 32 | 5 | PB0 | ALT2 | 0 | 11 |     # was ALT14 before the overlay
+| 33 | 7 | PB1 | ALT2 | 0 | 13 |     # ALT2 == the mux used by known-good UART0
+```
+
+Transmit test (the same one that exposed ttyS1 as Bluetooth):
+
+```
+$ stty -F /dev/ttyS2 300 ...; time printf '<16 bytes>' > /dev/ttyS2
+exit=0  elapsed=0.62s
+```
+
+16 bytes × 10 bits ÷ 300 baud = 0.53 s theoretical. The measured 0.62 s matches,
+confirming real transmission at the configured rate rather than writes vanishing
+into a buffer. Compare `/dev/ttyS1`, which blocked for the full 10 s timeout.
+
+`./test_serial.sh` reports **all checks passed**.
+
+**Still outstanding:** no flight controller has been attached. Everything is
+proven up to and including the port transmitting, but not end to end.

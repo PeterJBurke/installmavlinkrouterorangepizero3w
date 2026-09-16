@@ -4,7 +4,8 @@
 #
 #   ./test_serial.sh              run all non-destructive checks
 #   ./test_serial.sh --loopback   also run a TX->RX loopback test
-#                                 (jumper header pin 8 to pin 10 first!)
+#                                 (jumper the UART's TX and RX pins first --
+#                                  pins 11 and 13 for the default UART2)
 #   ./test_serial.sh --listen 15  stop the service and sniff the FC for 15s
 #
 # Safe to run as a normal user (some checks need sudo and will say so).
@@ -88,7 +89,7 @@ fi
 LDISC="$(stty -F "$DEVICE" -a 2>/dev/null | grep -oE 'line = [0-9]+' | grep -oE '[0-9]+' || echo '?')"
 if [ "$LDISC" = "15" ]; then
     fail "line discipline is 15 (N_HCI) — $DEVICE is bound to Bluetooth, writes will hang"
-    note "This is /dev/ttyS1's normal state on this board. Use /dev/ttyS0 instead."
+    note "This is /dev/ttyS1's normal state on this board. Use /dev/ttyS2 instead."
 elif [ "$LDISC" = "0" ]; then
     pass "line discipline 0 (N_TTY) — normal serial"
 else
@@ -188,7 +189,8 @@ fi
 # ---------------------------------------------------------------- 6. loopback
 if [ "$MODE" = "loopback" ]; then
     hdr "6. Loopback test"
-    echo "        Jumper header ${c_bld}pin 8${c_off} to ${c_bld}pin 10${c_off} (TX to RX), then press Enter."
+    read -r PIN_TX PIN_RX PIN_GND PIN_LABEL <<<"$(pins_for_device "$DEVICE")"
+    echo "        Jumper header ${c_bld}pin $PIN_TX${c_off} to ${c_bld}pin $PIN_RX${c_off} ($PIN_LABEL TX to RX), then press Enter."
     read -r _
     if systemctl is-active --quiet mavlink-router.service 2>/dev/null; then
         echo "        stopping mavlink-router for the test..."
@@ -207,7 +209,7 @@ if [ "$MODE" = "loopback" ]; then
         note "UART0 TX and RX both work. Remove the jumper and wire the FC."
     else
         fail "loopback failed — sent '$MSG', got '${GOT:-<nothing>}'"
-        note "Check the jumper is between pin 8 and pin 10, and that the checks above all passed."
+        note "Check the jumper is between pin $PIN_TX and pin $PIN_RX, and that the checks above all passed."
     fi
     [ "${RESTART:-0}" = "1" ] && sudo systemctl start mavlink-router.service
 fi

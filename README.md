@@ -38,21 +38,22 @@ silently does nothing useful. See [Why this is not just the Pi script](#why-this
    ┌──────────────────────────────┐          (TELEM port)
    │  1  ● ●  2                   │
    │  3  ● ●  4                   │
-   │  5  ● ●  6   GND ────────────┼────────► GND
-   │  7  ● ●  8   TXD.0 ──────────┼────────► RX
-   │  9  ● ● 10   RXD.0 ◄─────────┼───────── TX
-   │ ...                          │
+   │  5  ● ●  6                   │
+   │  7  ● ●  8                   │
+   │  9  ● ● 10                   │
+   │ 11  ● ● 12   UART2-TX ───────┼────────► RX
+   │ 13  ● ● 14   UART2-RX ◄──────┼───────── TX
+   │              GND (pin 14) ───┼────────► GND
    └──────────────────────────────┘
 ```
 
 | Header pin | Signal | Connect to |
 |---:|---|---|
-| **8** | `TXD.0` (UART0 TX) | flight controller **RX** |
-| **10** | `RXD.0` (UART0 RX) | flight controller **TX** |
-| **6** | `GND` | flight controller **GND** |
+| **11** | `UART2-TX` (PB0) | flight controller **RX** |
+| **13** | `UART2-RX` (PB1) | flight controller **TX** |
+| **14** | `GND` | flight controller **GND** |
 
-These are the **same physical pins as the Raspberry Pi's UART**, so a harness
-built for the Pi version of this project plugs in unchanged.
+(Pin 6, 9, 20, 25, 30, 34 or 39 work equally well for GND.)
 
 > ⚠️ **TX goes to RX and RX goes to TX.** Straight-through TX→TX is the single
 > most common reason nothing appears.
@@ -62,7 +63,40 @@ built for the Pi version of this project plugs in unchanged.
 > The Orange Pi's GPIO is **3.3 V**; most FC telemetry ports are 3.3 V-safe, but
 > confirm yours before connecting.
 
----
+### Which UART, and why not pins 8/10
+
+Per the vendor manual (§3.16.5) this board exposes three general-purpose UARTs.
+Each needs its device-tree overlay enabled; `install.sh` does that for you:
+
+| UART | TX pin | RX pin | device | overlay |
+|---|---:|---:|---|---|
+| **UART2** (default) | **11** | **13** | `/dev/ttyS2` | `uart2` |
+| UART6 | 24 | 23 | `/dev/ttyS6` | `uart6` |
+| UART7 | 16 | 18 | `/dev/ttyS7` | `uart7` |
+
+**Pins 8/10 look like the obvious choice and are best avoided.** They are
+labelled `TXD.0`/`RXD.0` and are indeed UART0 — but the schematic (p.18,
+`EXT I/O`) shows them carrying PB9/PB10 as nets `CPU-TX`/`CPU-RX`, tied through
+1 kΩ resistors R82/R83 to the `CPU DEBUG` net that feeds the separate 3-pin debug
+header. Two consequences:
+
+- **U-Boot prints to UART0 at 115200 on every boot.** `console=` in
+  `orangepiEnv.txt` only controls the *kernel*, so it cannot silence the
+  bootloader — your flight controller would receive a burst of boot text at each
+  power-up. ArduPilot's parser discards non-frame bytes, so it is very likely
+  harmless, but it is not clean.
+- Using UART0 means **giving up the serial console**, which is the only way to
+  debug a board that will not boot.
+
+If you want it anyway (for example to reuse a Raspberry Pi harness, since pins
+8/10 are the same physical pins as the Pi's UART):
+
+```bash
+sudo MLR_DEVICE=/dev/ttyS0 ./install.sh
+```
+
+`install.sh` will free the console, mask the getty, and warn you about the
+bootloader noise.
 
 ## Install
 
@@ -101,9 +135,11 @@ faster.)
    - uses the prebuilt binary in `bin/orangepizero3w-aarch64/` when the host
      glibc is new enough, **and only after proving the binary actually runs**;
    - otherwise compiles from source (meson + ninja), which takes ~25 s.
-3. **Frees UART0 from console duty** by setting `console=display` and
-   `earlycon=off` in `/boot/orangepiEnv.txt`, and disabling + masking
-   `serial-getty@ttyS0.service`.
+3. **Enables the UART** for your chosen device by adding e.g. `overlays=uart2`
+   to `/boot/orangepiEnv.txt`, and installs a udev rule giving the port to the
+   `dialout` group. If you chose UART0 instead, it frees the console and masks
+   `serial-getty@ttyS0`; otherwise it *restores* `console=both`/`earlycon=on`
+   and re-enables the getty, so the serial console keeps working.
 4. Adds your user to `dialout`.
 5. Writes `/etc/mavlink-router/main.conf` (backing up any existing one).
 6. Installs and enables a `mavlink-router.service` systemd unit.
@@ -120,17 +156,17 @@ Set as environment variables:
 sudo MLR_BAUD=115200 ./install.sh          # different FC telemetry baud
 sudo MLR_TCP_PORT=14550 ./install.sh       # different TCP port
 sudo MLR_FORCE_SOURCE=1 ./install.sh       # always compile, ignore prebuilt binary
-sudo MLR_KEEP_CONSOLE=1 MLR_DEVICE=/dev/ttyS2 MLR_UART_OVERLAY=uart2 ./install.sh
+sudo MLR_DEVICE=/dev/ttyS0 ./install.sh       # use UART0 on pins 8/10 instead
 ```
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `MLR_DEVICE` | `/dev/ttyS0` | serial device for the flight controller |
+| `MLR_DEVICE` | `/dev/ttyS2` | serial device for the flight controller |
 | `MLR_BAUD` | `57600` | FC telemetry baud |
 | `MLR_TCP_PORT` | `5678` | TCP port for the ground station |
 | `MLR_FORCE_SOURCE` | `0` | `1` = always build from source |
 | `MLR_KEEP_CONSOLE` | `0` | `1` = keep the serial console on UART0 |
-| `MLR_UART_OVERLAY` | *(none)* | also enable `uart2`/`uart6`/`uart7`/`uart8` |
+| `MLR_UART_OVERLAY` | *derived from device* | overlay to enable (`uart2`/`uart6`/`uart7`/`uart8`) |
 
 ---
 
@@ -155,12 +191,12 @@ block in `/etc/mavlink-router/main.conf` and `sudo systemctl restart mavlink-rou
 
 ```bash
 ./test_serial.sh              # all non-destructive checks
-./test_serial.sh --loopback   # jumper pin 8 to pin 10 and prove TX/RX work
+./test_serial.sh --loopback   # jumper pin 11 to pin 13 and prove TX/RX work
 ./test_serial.sh --listen 15  # sniff the FC for 15s and decode MAVLink frames
 ```
 
 `--loopback` is the fastest way to separate "the Pi's UART is broken" from
-"the wiring to the FC is wrong": with a jumper between pins 8 and 10 and no FC
+"the wiring to the FC is wrong": with a jumper between pins 11 and 13 and no FC
 attached, it should report `loopback OK`.
 
 `--listen` stops the service, reads the raw port, and decodes MAVLink v1/v2
@@ -188,8 +224,8 @@ installed but cannot talk to a flight controller. The differences:
 | | Raspberry Pi Zero 2 W | Orange Pi Zero 3W (A733) |
 |---|---|---|
 | Boot config | `/boot/firmware/config.txt`, `cmdline.txt` | `/boot/orangepiEnv.txt` — **the Pi files do not exist** |
-| Free the UART | `dtoverlay=disable-bt` | `console=display` + `earlycon=off` |
-| FC device | `/dev/serial0` | `/dev/ttyS0` |
+| Enable the UART | on by default | `overlays=uart2` in `orangepiEnv.txt` |
+| FC device | `/dev/serial0` | `/dev/ttyS2` (UART2, pins 11/13) |
 | `/dev/ttyS1` | n/a | **onboard Bluetooth HCI — a trap, see below** |
 | Upstream source | `github.com/intel/mavlink-router` | moved to `github.com/mavlink-router/mavlink-router` |
 | Build time | 10–15 min | ~25 s |
@@ -270,15 +306,26 @@ will not boot.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `./test_serial.sh` says kernel console still on ttyS0 | not rebooted yet | `sudo reboot` |
+| `/dev/ttyS2` does not exist | overlay not applied yet | check `overlays=uart2` in `/boot/orangepiEnv.txt`, then `sudo reboot` |
+| Pins 11/13 show `OFF`, not `ALT2` | overlay not loaded | same as above |
 | Service restarts every 5 s | config or device error | `journalctl -u mavlink-router -n 50` |
 | `--listen` shows 0 bytes | FC unpowered, TX/RX swapped, no shared GND | recheck wiring table |
 | `--listen` shows bytes but no frames | wrong baud | match the FC's `SERIALn_BAUD` |
-| Writes hang forever | you used `/dev/ttyS1` | use `/dev/ttyS0` |
+| Writes hang forever | you used `/dev/ttyS1` | use `/dev/ttyS2` |
 | GCS cannot connect | firewall or wrong IP | `ss -ltn \| grep 5678`, `hostname -I` |
-| Garbage on the FC at boot | console not released | check `/boot/orangepiEnv.txt` |
+| Garbage on the FC at boot | you are on UART0; U-Boot prints there | switch to UART2 (pins 11/13) |
 
 ---
+
+## References
+
+- Orange Pi Zero 3W **user manual** v1.0 (A733) — §2.11 debugging serial port,
+  §3.14 40-pin pinout, §3.16.5 40-pin UART test
+- **OPi_ZERO_3W_V1_2 schematic** — p.9 SoC pin functions, p.18 `EXT I/O`
+  (40-pin header net names, R82/R83)
+
+Both are vendor-copyright and are not redistributed here. `docs/BUILD_JOURNAL.md`
+quotes the specific tables and net names relied on.
 
 ## License
 
