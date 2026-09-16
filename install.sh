@@ -226,13 +226,34 @@ if [ "$MLR_KEEP_CONSOLE" != "1" ] && [ "$MLR_DEVICE" = "/dev/ttyS0" ]; then
     fi
 
     # The login prompt on ttyS0 would fight the flight controller for the port.
-    if systemctl list-unit-files 2>/dev/null | grep -q '^serial-getty@'; then
+    # NOTE: do NOT use `| grep -q` here. grep -q exits on first match, systemctl
+    # gets SIGPIPE (141), and `set -o pipefail` turns that into a failed guard --
+    # which silently skipped this whole block. Plain grep reads all input.
+    if systemctl list-unit-files --no-legend --plain 2>/dev/null | grep '^serial-getty@' >/dev/null; then
         systemctl disable --now serial-getty@ttyS0.service >/dev/null 2>&1 || true
         systemctl mask serial-getty@ttyS0.service >/dev/null 2>&1 || true
         ok "Disabled and masked serial-getty@ttyS0.service"
     fi
 else
     info "Leaving the serial console alone (MLR_KEEP_CONSOLE=$MLR_KEEP_CONSOLE, device=$MLR_DEVICE)"
+fi
+
+# --- 3ab. let the dialout group open the port -------------------------------
+# Masking the getty leaves /dev/ttyS0 as root:tty 0600 -- console devices are
+# given the 'tty' group, not 'dialout', so no non-root tool can open it. The
+# mavlink-router service runs as root and is unaffected, but test_serial.sh and
+# anything else run as a normal user would fail with EACCES. Fix with udev.
+DEV_KERNEL="${MLR_DEVICE#/dev/}"
+cat > /etc/udev/rules.d/99-mavlink-router-uart.rules <<UDEV
+# Installed by installmavlinkrouterorangepizero3w
+KERNEL=="$DEV_KERNEL", GROUP="dialout", MODE="0660"
+UDEV
+if command -v udevadm >/dev/null 2>&1; then
+    udevadm control --reload-rules >/dev/null 2>&1 || true
+    udevadm trigger --subsystem-match=tty >/dev/null 2>&1 || true
+    ok "udev rule installed: $MLR_DEVICE -> group dialout, mode 0660"
+else
+    warn "udevadm not found; $MLR_DEVICE may stay root-only until reboot"
 fi
 
 # --- 3b. optional extra UART via device-tree overlay ------------------------
@@ -264,7 +285,8 @@ if [ "$MLR_DEVICE" = "/dev/ttyS1" ]; then
 fi
 
 # --- 3d. dialout group ------------------------------------------------------
-if id -nG "$TARGET_USER" 2>/dev/null | tr ' ' '\n' | grep -qx dialout; then
+# Same pipefail/SIGPIPE caveat as above: plain grep, not grep -q.
+if id -nG "$TARGET_USER" 2>/dev/null | tr ' ' '\n' | grep -x dialout >/dev/null; then
     ok "User '$TARGET_USER' already in dialout"
 else
     usermod -aG dialout "$TARGET_USER" && ok "Added '$TARGET_USER' to dialout (effective next login)"

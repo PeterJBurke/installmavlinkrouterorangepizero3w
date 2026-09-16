@@ -436,3 +436,156 @@ already in the base DTB.
 > **Gotcha #12 — `/boot/firmware/config.txt` and `cmdline.txt` do not exist.**
 > The 2024 Pi script's entire `installstuff()` serial-config block is a silent
 > no-op on this hardware. It must be replaced with the `orangepiEnv.txt` logic above.
+
+---
+
+## 8. First real end-to-end run (and the bug it exposed)
+
+`sudo ./install.sh` ran in **8 seconds**, used the prebuilt binary (host glibc
+2.43 >= required 2.42), wrote the config and unit, correctly refused to start the
+service while the kernel still owned ttyS0, and asked for a reboot. After the
+reboot the console was off ttyS0 and `mavlink-router.service` was active and
+listening on TCP 5678.
+
+But `./test_serial.sh` still reported one failure:
+
+```
+  FAIL  serial-getty@ttyS0.service is active/enabled — a login prompt is fighting for the port
+```
+
+The install log showed the getty block had never executed — it jumped straight
+from the console warning to the dialout check, with no
+"Disabled and masked serial-getty@ttyS0.service" line.
+
+### Gotcha #13 — `set -o pipefail` + `grep -q` silently inverts a guard
+
+The guard was:
+
+```bash
+if systemctl list-unit-files 2>/dev/null | grep -q '^serial-getty@'; then
+```
+
+Tested interactively, this is TRUE. Inside the script it is FALSE:
+
+```
+$ bash -c 'if systemctl list-unit-files | grep -q "^serial-getty@"; then echo TRUE; else echo FALSE; fi'
+TRUE
+
+$ bash -c 'set -euo pipefail; if systemctl list-unit-files | grep -q "^serial-getty@"; then echo TRUE; else echo FALSE; fi'
+FALSE
+
+$ bash -c 'set -o pipefail; systemctl list-unit-files | grep -q "^serial-getty@"; echo $?'
+141
+```
+
+**141 = 128 + 13 = SIGPIPE.** `grep -q` exits the moment it finds a match. The
+upstream `systemctl`, still writing its (long) output, gets SIGPIPE and dies with
+141. `set -o pipefail` makes the pipeline take the *worst* status in the pipe, so
+the whole condition fails — and the entire block is skipped **silently**, because
+a false `if` is not an error.
+
+This is insidious for three reasons:
+
+1. It cannot be reproduced by typing the same command at an interactive prompt,
+   because your shell does not have `pipefail` set.
+2. `bash -n` cannot catch it; the syntax is perfect.
+3. Whether it bites **depends on how much data the writer produces**. The same
+   pattern on line 267:
+   ```bash
+   if id -nG "$TARGET_USER" | tr ' ' '\n' | grep -qx dialout; then
+   ```
+   *worked*, because `id -nG`'s output is tiny and `tr` finishes writing into the
+   64K pipe buffer before `grep -q` exits — so no SIGPIPE. It is a race that
+   happens to be won. The `systemctl` version produces far more output and loses
+   the race deterministically.
+
+**Fix:** use plain `grep ... >/dev/null` instead of `grep -q`. Plain grep keeps
+reading to the end of input looking for further matches, so the writer never gets
+SIGPIPE:
+
+```bash
+if systemctl list-unit-files --no-legend --plain 2>/dev/null | grep '^serial-getty@' >/dev/null; then
+```
+
+All occurrences were fixed in `install.sh` (2), `test_serial.sh` (3) and
+`uninstall.sh` (1). The one in `uninstall.sh` guarded the service-removal block,
+so uninstall would have silently failed to remove the unit.
+
+> **Rule for this repo: never use `grep -q` on the right-hand side of a pipe in a
+> script that sets `pipefail`.** Prefer `grep pattern >/dev/null`, or capture the
+> output into a variable first and match against that.
+
+---
+
+## 9. Two more bugs found by re-running
+
+Re-running `install.sh` after the pipefail fix disabled and masked the getty
+correctly, but exposed two further problems.
+
+### Gotcha #14 — masking the getty makes /dev/ttyS0 root-only
+
+Before the fix, `/dev/ttyS0` showed as `orangepi:tty 0600`. That ownership was
+not a property of the device — it was the *login session* on the getty, which
+chowns its tty to the logged-in user. With the getty masked, it reverts:
+
+```
+$ ls -l /dev/ttyS0
+crw------- 1 root tty 241, 0 /dev/ttyS0
+```
+
+Console devices are given the **`tty`** group, not `dialout` (compare `/dev/ttyS1`,
+which is `root:dialout 0660`). So being in `dialout` does not help, and any
+non-root tool gets EACCES:
+
+```
+  FAIL  not read/write for orangepi — are you in 'dialout'? (groups: ... dialout ...)
+```
+
+Note how misleading the symptom is: the user *is* in `dialout`, so the obvious
+diagnosis is wrong. `mavlink-router.service` was unaffected the whole time
+because it runs as root — the failure only hits interactive tools.
+
+**Fix** — install a udev rule (`install.sh` §3ab):
+
+```
+# /etc/udev/rules.d/99-mavlink-router-uart.rules
+KERNEL=="ttyS0", GROUP="dialout", MODE="0660"
+```
+
+then `udevadm control --reload-rules && udevadm trigger --subsystem-match=tty`.
+Result:
+
+```
+crw-rw---- 1 root dialout 241, 0 /dev/ttyS0
+```
+
+### Gotcha #15 — `systemctl is-enabled` on a masked unit exits non-zero
+
+`test_serial.sh` printed a stray `not-found` line under an otherwise-passing
+check. Cause:
+
+```bash
+GSTATE="$(systemctl is-enabled "$GETTY" 2>/dev/null || echo 'not-found')"
+```
+
+For a **masked** unit, `systemctl is-enabled` writes `masked` to stdout **and
+exits 1**. So the `||` branch also ran, and the variable became two lines:
+`masked\nnot-found`. Same class of mistake as gotcha #13 — assuming a non-zero
+exit means "no output". Fixed with `|| true` plus an explicit empty check.
+
+### Final state — all checks passing
+
+```
+1. Board            PASS  Orange Pi Zero 3W (A733 / sun60iw2)
+2. Serial device    PASS  /dev/ttyS0 (root:dialout 660), rw, line discipline 0
+3. Console          PASS  console off ttyS0; serial-getty@ttyS0 masked
+4. Header           PASS  pins 8/10 muxed ALT2 as TXD.0/RXD.0
+5. mavlink-router   PASS  2362c62 running, listening on TCP 5678
+```
+
+`install.sh` was run three times in total with no ill effects, which is the
+idempotency check. Timings: 8 s, 12 s, 11 s.
+
+**Remaining work:** connect a flight controller to pins 8/10/6 and confirm
+HEARTBEAT with `./test_serial.sh --listen 15`. Until that is done, the serial
+path has been proven only up to the port, not end to end.

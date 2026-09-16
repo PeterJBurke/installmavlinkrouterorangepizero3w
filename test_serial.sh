@@ -84,7 +84,7 @@ else
     warn "line discipline $LDISC (expected 0)"
 fi
 
-if ps aux 2>/dev/null | grep -q "[h]ciattach.*$DEVICE"; then
+if ps aux 2>/dev/null | grep "[h]ciattach.*$DEVICE" >/dev/null; then
     fail "hciattach is holding $DEVICE (Bluetooth). Pick a different UART."
 fi
 
@@ -99,7 +99,10 @@ else
 fi
 
 GETTY="serial-getty@${DEVICE#/dev/}.service"
-GSTATE="$(systemctl is-enabled "$GETTY" 2>/dev/null || echo 'not-found')"
+# NOTE: `systemctl is-enabled` prints "masked" but EXITS NON-ZERO for a masked
+# unit, so `|| echo not-found` would append a second line to the value.
+GSTATE="$(systemctl is-enabled "$GETTY" 2>/dev/null || true)"
+[ -z "$GSTATE" ] && GSTATE="not-found"
 if [ "$GSTATE" = "enabled" ] || systemctl is-active --quiet "$GETTY" 2>/dev/null; then
     fail "$GETTY is active/enabled — a login prompt is fighting for the port"
     note "fix: sudo systemctl disable --now $GETTY && sudo systemctl mask $GETTY"
@@ -112,7 +115,7 @@ hdr "4. 40-pin header"
 if command -v gpio >/dev/null 2>&1; then
     echo "        pin 8 / pin 10 should read ALT2 as TXD.0 / RXD.0:"
     gpio readall 2>/dev/null | grep -E 'TXD\.0|RXD\.0' | sed 's/^/        /'
-    if gpio readall 2>/dev/null | grep -E 'TXD\.0' | grep -q 'ALT'; then
+    if gpio readall 2>/dev/null | grep -E 'TXD\.0' | grep 'ALT' >/dev/null; then
         pass "UART0 pins are muxed to their serial function"
     else
         warn "UART0 pins are not in ALT mode"
@@ -141,7 +144,7 @@ else
 fi
 
 if command -v ss >/dev/null 2>&1; then
-    if ss -ltn 2>/dev/null | grep -q ":$TCP_PORT"; then
+    if ss -ltn 2>/dev/null | grep ":$TCP_PORT" >/dev/null; then
         pass "listening on TCP $TCP_PORT"
         IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
         note "connect a GCS to:  tcp:${IP:-<pi-ip>}:$TCP_PORT"

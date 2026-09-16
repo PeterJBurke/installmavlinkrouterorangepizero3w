@@ -23,7 +23,9 @@ warn() { echo "${c_yel}  [warn]${c_off} $*"; }
 echo "${c_bld}Removing MAVLink Router${c_off}"
 
 # 1. service
-if systemctl list-unit-files 2>/dev/null | grep -q '^mavlink-router.service'; then
+# Plain grep, not grep -q: grep -q exits early, systemctl gets SIGPIPE, and
+# `set -o pipefail` would make this guard falsely fail. See BUILD_JOURNAL.md.
+if systemctl list-unit-files --no-legend --plain 2>/dev/null | grep '^mavlink-router.service' >/dev/null; then
     systemctl disable --now mavlink-router.service >/dev/null 2>&1 || true
     ok "Stopped and disabled mavlink-router.service"
 fi
@@ -44,6 +46,13 @@ if [ "$KEEP_CONF" -eq 0 ]; then
     fi
 else
     ok "Kept /etc/mavlink-router (--keep-conf)"
+fi
+
+# 3b. udev rule
+if [ -f /etc/udev/rules.d/99-mavlink-router-uart.rules ]; then
+    rm -f /etc/udev/rules.d/99-mavlink-router-uart.rules
+    udevadm control --reload-rules >/dev/null 2>&1 || true
+    ok "Removed udev rule"
 fi
 
 # 4. restore the serial console

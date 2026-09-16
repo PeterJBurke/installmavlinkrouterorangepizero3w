@@ -1,0 +1,47 @@
+
+[0;34m[1m==> Preflight checks[0m
+[0;32m  [ok][0m Architecture: aarch64
+  Board model string: 'sun60iw2'
+[0;32m  [ok][0m Orange Pi Zero 3W (Allwinner A733 / sun60iw2) confirmed
+  OS: Orange Pi 1.0.2 Resolute
+  Target (non-root) user: orangepi
+  Existing mavlink-routerd: /usr/bin/mavlink-routerd (mavlink-router version 2362c62)
+
+[0;34m[1m==> Installing base packages[0m
+[0;32m  [ok][0m Base packages present
+
+[0;34m[1m==> Installing mavlink-routerd[0m
+[0;32m  [ok][0m mavlink-routerd already installed — skipping (set MLR_FORCE_SOURCE=1 to rebuild)
+[0;32m  [ok][0m mavlink-routerd: mavlink-router version 2362c62
+
+[0;34m[1m==> Configuring the serial port for the flight controller[0m
+  Backed up /boot/orangepiEnv.txt
+[0;32m  [ok][0m Set console=display and earlycon=off in /boot/orangepiEnv.txt
+[0;32m  [ok][0m Disabled and masked serial-getty@ttyS0.service
+[0;32m  [ok][0m udev rule installed: /dev/ttyS0 -> group dialout, mode 0660
+[0;32m  [ok][0m User 'orangepi' already in dialout
+
+[0;34m[1m==> Writing /etc/mavlink-router/main.conf[0m
+  Backed up existing main.conf
+[0;32m  [ok][0m Config written (device=/dev/ttyS0 baud=57600 tcp=5678)
+
+[0;34m[1m==> Installing systemd service[0m
+[0;32m  [ok][0m Service installed and enabled at boot
+[0;32m  [ok][0m mavlink-router.service is running
+
+[0;34m[1m==> Done in 11s[0m
+
+  [1mWiring (Orange Pi Zero 3W 40-pin header)[0m
+    pin 8  TXD.0  ->  flight controller RX
+    pin 10 RXD.0  ->  flight controller TX
+    pin 6  GND    ->  flight controller GND
+
+  [1mConfiguration[0m
+    serial device : /dev/ttyS0 @ 57600 baud
+    TCP server    : port 5678  (connect Mission Planner / QGC here)
+    config file   : /etc/mavlink-router/main.conf
+    service       : systemctl status mavlink-router
+    logs          : journalctl -u mavlink-router -f
+
+  Verify with:  ./test_serial.sh
+
