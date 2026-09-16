@@ -11,7 +11,7 @@
 #   sudo ./install.sh 2>&1 | tee MavlinkRouterBuildlog.txt
 #
 # Options (environment variables):
-#   MLR_DEVICE=/dev/ttyS0     serial device given to the flight controller
+#   MLR_DEVICE=/dev/ttyS2     serial device given to the flight controller
 #   MLR_BAUD=57600            flight controller telemetry baud
 #   MLR_TCP_PORT=5678         TCP port mavlink-router serves on
 #   MLR_FORCE_SOURCE=1        always compile from source, ignore the prebuilt binary
@@ -25,15 +25,42 @@ set -euo pipefail
 REPO_RAW="https://raw.githubusercontent.com/PeterJBurke/installmavlinkrouterorangepizero3w/main"
 UPSTREAM_GIT="https://github.com/mavlink-router/mavlink-router.git"
 
-MLR_DEVICE="${MLR_DEVICE:-/dev/ttyS0}"
+MLR_DEVICE="${MLR_DEVICE:-/dev/ttyS2}"
 MLR_BAUD="${MLR_BAUD:-57600}"
 MLR_TCP_PORT="${MLR_TCP_PORT:-5678}"
 MLR_FORCE_SOURCE="${MLR_FORCE_SOURCE:-0}"
 MLR_KEEP_CONSOLE="${MLR_KEEP_CONSOLE:-0}"
 MLR_UART_OVERLAY="${MLR_UART_OVERLAY:-}"
 
+# UART2/6/7/8 are disabled in the base DTB and need a device-tree overlay.
+# Derive the overlay from the chosen device unless the caller named one.
+if [ -z "$MLR_UART_OVERLAY" ]; then
+    case "$MLR_DEVICE" in
+        /dev/ttyS2) MLR_UART_OVERLAY="uart2" ;;
+        /dev/ttyS6) MLR_UART_OVERLAY="uart6" ;;
+        /dev/ttyS7) MLR_UART_OVERLAY="uart7" ;;
+        /dev/ttyS8) MLR_UART_OVERLAY="uart8" ;;
+    esac
+fi
+
 # glibc floor of the prebuilt binary (see BUILD_JOURNAL.md gotcha #9)
 PREBUILT_GLIBC_REQ="2.42"
+
+# Header pin map per UART, from the OPi Zero 3W V1.2 schematic (page 18,
+# "EXT I/O") and the vendor manual section 3.16.5.
+#   UART0  PB9/PB10   pins 8 (TX) / 10 (RX)  - also the CPU DEBUG net, via 1K
+#   UART2  PB0/PB1    pins 11 (TX) / 13 (RX)
+#   UART6             pins 24 (TX) / 23 (RX)
+#   UART7             pins 16 (TX) / 18 (RX)
+pins_for_device() { # -> "TXpin RXpin GNDpin label"
+    case "$1" in
+        /dev/ttyS0) echo "8 10 6 UART0" ;;
+        /dev/ttyS2) echo "11 13 14 UART2" ;;
+        /dev/ttyS6) echo "24 23 20 UART6" ;;
+        /dev/ttyS7) echo "16 18 20 UART7" ;;
+        *)          echo "? ? ? unknown" ;;
+    esac
+}
 
 BIN_DIR="/usr/bin"
 CONF_DIR="/etc/mavlink-router"
@@ -197,52 +224,56 @@ ok "mavlink-routerd: $("$BIN_DIR/mavlink-routerd" --version 2>/dev/null || echo 
 # ------------------------------------------------------- 3. UART configuration
 step "Configuring the serial port for the flight controller"
 
-# --- 3a. free UART0 from console duty (unless told otherwise) ---------------
-if [ "$MLR_KEEP_CONSOLE" != "1" ] && [ "$MLR_DEVICE" = "/dev/ttyS0" ]; then
+# --- 3a. serial console: free it for UART0, or restore it otherwise ---------
+# Only UART0 (header pins 8/10) collides with the console. For any other UART
+# we actively RESTORE the console, so that switching from a ttyS0 setup back to
+# ttyS2 gives you console debugging again instead of silently leaving it off.
 
-    if [ ! -f "$ENVFILE" ]; then
-        warn "$ENVFILE not found — is this really an Orange Pi? Skipping console reconfig."
+set_env_kv() {  # set_env_kv key value  -- idempotent edit of orangepiEnv.txt
+    local key="$1" val="$2"
+    if grep -qE "^${key}=" "$ENVFILE"; then
+        sed -i "s|^${key}=.*|${key}=${val}|" "$ENVFILE"
     else
-        cp -n "$ENVFILE" "${ENVFILE}.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
-        info "Backed up $ENVFILE"
-
-        # boot.cmd sets defaults THEN imports orangepiEnv.txt, so these win.
-        # console=display  -> drops console=ttyS0,115200 from the kernel cmdline
-        # earlycon=off     -> drops earlyprintk=sunxi-uart,0x02500000
-        for kv in "console=display" "earlycon=off"; do
-            key="${kv%%=*}"
-            if grep -qE "^${key}=" "$ENVFILE"; then
-                sed -i "s|^${key}=.*|${kv}|" "$ENVFILE"
-            else
-                echo "$kv" >> "$ENVFILE"
-            fi
-        done
-        ok "Set console=display and earlycon=off in $ENVFILE"
-
-        if grep -q 'console=ttyS0' /proc/cmdline; then
-            REBOOT_REQUIRED=1
-            warn "Kernel is STILL logging to ttyS0 — a reboot is required before use"
-        fi
+        echo "${key}=${val}" >> "$ENVFILE"
     fi
+}
 
-    # The login prompt on ttyS0 would fight the flight controller for the port.
-    # NOTE: do NOT use `| grep -q` here. grep -q exits on first match, systemctl
-    # gets SIGPIPE (141), and `set -o pipefail` turns that into a failed guard --
-    # which silently skipped this whole block. Plain grep reads all input.
-    if systemctl list-unit-files --no-legend --plain 2>/dev/null | grep '^serial-getty@' >/dev/null; then
+if [ ! -f "$ENVFILE" ]; then
+    warn "$ENVFILE not found — is this really an Orange Pi? Skipping console reconfig."
+else
+    cp -n "$ENVFILE" "${ENVFILE}.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
+
+    if [ "$MLR_DEVICE" = "/dev/ttyS0" ] && [ "$MLR_KEEP_CONSOLE" != "1" ]; then
+        # Give UART0 to the flight controller.
+        # boot.cmd sets defaults THEN imports orangepiEnv.txt, so these win.
+        set_env_kv console  display   # drops console=ttyS0,115200 from cmdline
+        set_env_kv earlycon off       # drops earlyprintk=sunxi-uart,0x02500000
+        ok "Freed UART0: console=display, earlycon=off in $ENVFILE"
+        grep -q 'console=ttyS0' /proc/cmdline && REBOOT_REQUIRED=1
+
         systemctl disable --now serial-getty@ttyS0.service >/dev/null 2>&1 || true
         systemctl mask serial-getty@ttyS0.service >/dev/null 2>&1 || true
         ok "Disabled and masked serial-getty@ttyS0.service"
+
+        warn "U-Boot still prints to UART0 at 115200 on every boot; console= only"
+        warn "controls the kernel. Expect a burst of boot text at the flight controller."
+    else
+        # Not using UART0 -> the console is free to stay on, which is worth
+        # having: it is the only way to debug a board that will not boot.
+        set_env_kv console  both
+        set_env_kv earlycon on
+        ok "Serial console left enabled on UART0 (pins 8/10): console=both, earlycon=on"
+
+        systemctl unmask serial-getty@ttyS0.service >/dev/null 2>&1 || true
+        systemctl enable serial-getty@ttyS0.service  >/dev/null 2>&1 || true
+        ok "Re-enabled serial-getty@ttyS0.service"
     fi
-else
-    info "Leaving the serial console alone (MLR_KEEP_CONSOLE=$MLR_KEEP_CONSOLE, device=$MLR_DEVICE)"
 fi
 
 # --- 3ab. let the dialout group open the port -------------------------------
-# Masking the getty leaves /dev/ttyS0 as root:tty 0600 -- console devices are
-# given the 'tty' group, not 'dialout', so no non-root tool can open it. The
-# mavlink-router service runs as root and is unaffected, but test_serial.sh and
-# anything else run as a normal user would fail with EACCES. Fix with udev.
+# A console device is given the 'tty' group and mode 0600, so dialout membership
+# alone does not grant access and non-root tools fail with EACCES. The service
+# runs as root and is unaffected, but test_serial.sh would break. Fix with udev.
 DEV_KERNEL="${MLR_DEVICE#/dev/}"
 cat > /etc/udev/rules.d/99-mavlink-router-uart.rules <<UDEV
 # Installed by installmavlinkrouterorangepizero3w
@@ -270,7 +301,11 @@ if [ -n "$MLR_UART_OVERLAY" ]; then
                 echo "overlays=${MLR_UART_OVERLAY}" >> "$ENVFILE"
             fi
             ok "Enabled device-tree overlay ${PREFIX}-${MLR_UART_OVERLAY}.dtbo"
-            REBOOT_REQUIRED=1
+            # The node only appears after the overlay is applied at boot.
+            if [ ! -e "$MLR_DEVICE" ]; then
+                REBOOT_REQUIRED=1
+                warn "$MLR_DEVICE does not exist yet — it appears after reboot"
+            fi
         else
             warn "Overlay not found: $DTBO — skipping"
         fi
@@ -295,6 +330,8 @@ fi
 # ------------------------------------------------------------- 4. main.conf
 step "Writing $CONF_DIR/main.conf"
 
+read -r PIN_TX PIN_RX PIN_GND PIN_LABEL <<<"$(pins_for_device "$MLR_DEVICE")"
+
 mkdir -p "$CONF_DIR"
 if [ -f "$CONF_DIR/main.conf" ]; then
     cp "$CONF_DIR/main.conf" "$CONF_DIR/main.conf.bak.$(date +%Y%m%d%H%M%S)"
@@ -306,9 +343,9 @@ cat > "$CONF_DIR/main.conf" <<CONF
 # Generated by installmavlinkrouterorangepizero3w on $(date -u +"%Y-%m-%dT%H:%M:%SZ")
 #
 # Orange Pi Zero 3W (Allwinner A733) pin map for the flight controller:
-#   header pin 8  = TXD.0 (UART0 TX)  -> flight controller RX
-#   header pin 10 = RXD.0 (UART0 RX)  -> flight controller TX
-#   header pin 6  = GND               -> flight controller GND
+#   header pin $PIN_TX = $PIN_LABEL TX  -> flight controller RX
+#   header pin $PIN_RX = $PIN_LABEL RX  -> flight controller TX
+#   header pin $PIN_GND = GND            -> flight controller GND
 # Do NOT cross-connect TX->TX. Do NOT power the FC from the Pi's 5V.
 
 [General]
@@ -376,10 +413,10 @@ step "Done in ${ELAPSED}s"
 
 cat <<SUMMARY
 
-  ${c_bld}Wiring (Orange Pi Zero 3W 40-pin header)${c_off}
-    pin 8  TXD.0  ->  flight controller RX
-    pin 10 RXD.0  ->  flight controller TX
-    pin 6  GND    ->  flight controller GND
+  ${c_bld}Wiring (Orange Pi Zero 3W 40-pin header) — $PIN_LABEL${c_off}
+    pin $PIN_TX  ${PIN_LABEL}-TX  ->  flight controller RX
+    pin $PIN_RX  ${PIN_LABEL}-RX  ->  flight controller TX
+    pin $PIN_GND  GND       ->  flight controller GND
 
   ${c_bld}Configuration${c_off}
     serial device : $MLR_DEVICE @ $MLR_BAUD baud
@@ -391,7 +428,12 @@ cat <<SUMMARY
 SUMMARY
 
 if [ "$REBOOT_REQUIRED" -eq 1 ]; then
-    echo "  ${c_yel}${c_bld}A REBOOT IS REQUIRED${c_off} to release the serial console from $MLR_DEVICE."
+    if [ -e "$MLR_DEVICE" ]; then
+        echo "  ${c_yel}${c_bld}A REBOOT IS REQUIRED${c_off} to release the serial console from $MLR_DEVICE."
+    else
+        echo "  ${c_yel}${c_bld}A REBOOT IS REQUIRED${c_off} — $MLR_DEVICE appears only once the"
+        echo "  ${c_yel}device-tree overlay '${MLR_UART_OVERLAY}' is applied at boot.${c_off}"
+    fi
     echo "  ${c_yel}Run: sudo reboot${c_off}"
     echo
     echo "  After rebooting, verify with:  ./test_serial.sh"

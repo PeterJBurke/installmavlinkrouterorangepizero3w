@@ -11,7 +11,7 @@
 
 set -uo pipefail
 
-DEVICE="${MLR_DEVICE:-/dev/ttyS0}"
+DEVICE="${MLR_DEVICE:-/dev/ttyS2}"
 BAUD="${MLR_BAUD:-57600}"
 TCP_PORT="${MLR_TCP_PORT:-5678}"
 CONF="/etc/mavlink-router/main.conf"
@@ -26,6 +26,17 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
+
+# Header pin map per UART -- schematic p.18 "EXT I/O" + manual s.3.16.5
+pins_for_device() { # -> "TXpin RXpin GNDpin label"
+    case "$1" in
+        /dev/ttyS0) echo "8 10 6 UART0" ;;
+        /dev/ttyS2) echo "11 13 14 UART2" ;;
+        /dev/ttyS6) echo "24 23 20 UART6" ;;
+        /dev/ttyS7) echo "16 18 20 UART7" ;;
+        *)          echo "? ? ? unknown" ;;
+    esac
+}
 
 c_red=$'\033[0;31m'; c_grn=$'\033[0;32m'; c_yel=$'\033[0;33m'
 c_blu=$'\033[0;34m'; c_bld=$'\033[1m'; c_off=$'\033[0m'
@@ -112,19 +123,40 @@ fi
 
 # ---------------------------------------------------------------- 4. pin state
 hdr "4. 40-pin header"
-if command -v gpio >/dev/null 2>&1; then
-    echo "        pin 8 / pin 10 should read ALT2 as TXD.0 / RXD.0:"
-    gpio readall 2>/dev/null | grep -E 'TXD\.0|RXD\.0' | sed 's/^/        /'
-    if gpio readall 2>/dev/null | grep -E 'TXD\.0' | grep 'ALT' >/dev/null; then
-        pass "UART0 pins are muxed to their serial function"
-    else
-        warn "UART0 pins are not in ALT mode"
-    fi
+read -r PIN_TX PIN_RX PIN_GND PIN_LABEL <<<"$(pins_for_device "$DEVICE")"
+
+if [ "$PIN_LABEL" = "unknown" ]; then
+    warn "No known header pin map for $DEVICE"
 else
-    warn "wiringOP 'gpio' not installed — skipping pin check"
+    if command -v gpio >/dev/null 2>&1; then
+        echo "        pins $PIN_TX / $PIN_RX should be muxed to $PIN_LABEL (ALT mode, not OFF):"
+        gpio readall 2>/dev/null | awk -v a="$PIN_TX" -v b="$PIN_RX" \
+            -F'|' '{gsub(/ /,"",$7); gsub(/ /,"",$8); if ($7==a || $8==a || $7==b || $8==b) print "        "$0}'
+        if gpio readall 2>/dev/null | awk -v a="$PIN_TX" -F'|' \
+             '{gsub(/ /,"",$7); gsub(/ /,"",$8); if ($7==a || $8==a) print $0}' | grep 'ALT' >/dev/null; then
+            pass "pin $PIN_TX is muxed to an alternate (peripheral) function"
+        else
+            fail "pin $PIN_TX is NOT in ALT mode — is the '$PIN_LABEL' overlay enabled?"
+            note "fix: add 'overlays=${PIN_LABEL,,}' to /boot/orangepiEnv.txt and reboot"
+        fi
+    else
+        warn "wiringOP 'gpio' not installed — skipping pin check"
+    fi
+    echo
+    echo "        ${c_bld}Wiring:${c_off}  pin $PIN_TX (TX) -> FC RX  |  pin $PIN_RX (RX) -> FC TX  |  pin $PIN_GND GND -> FC GND"
 fi
-echo
-echo "        ${c_bld}Wiring:${c_off}  pin 8 (TX) -> FC RX  |  pin 10 (RX) -> FC TX  |  pin 6 GND -> FC GND"
+
+# The overlay is what makes ttyS2/6/7/8 exist at all.
+case "$DEVICE" in
+    /dev/ttyS[2678])
+        OV="uart${DEVICE#/dev/ttyS}"
+        if grep -qE "^overlays=.*\b${OV}\b" /boot/orangepiEnv.txt 2>/dev/null; then
+            pass "overlay '$OV' is enabled in /boot/orangepiEnv.txt"
+        else
+            fail "overlay '$OV' is NOT in /boot/orangepiEnv.txt — $DEVICE will not exist"
+        fi
+        ;;
+esac
 
 # ---------------------------------------------------------------- 5. software
 hdr "5. mavlink-router"
