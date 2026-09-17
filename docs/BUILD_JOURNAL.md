@@ -861,3 +861,67 @@ magic bytes seen: 0
 Nothing is driving pin 13. Since the pin-11↔13 loopback passes, the Pi's UART is
 proven good, so the fault is downstream: the FC's TX not reaching pin 13, GND not
 shared, the FC not powered/booted, or its telemetry port not emitting MAVLink.
+
+---
+
+## 13. End to end — it works
+
+The flight controller's telemetry port had been left at **468000 baud** while
+`main.conf` was set to 57600. After changing the FC to 57600 and rebooting it:
+
+```
+        bytes read: 340  (22.7 bytes/sec)
+        CRC-valid MAVLink frames: 16
+        (magic bytes seen: 16, rejected by CRC: 0, unknown msgid: 0)
+
+        Real MAVLink confirmed (CRC verified).
+          sys   1  msg     0 HEARTBEAT              x15
+          sys   1  msg   111 TIMESYNC               x1
+        HEARTBEAT present - the flight controller is talking.
+  PASS  MAVLink received from the flight controller
+```
+
+15 HEARTBEATs in 15 s is exactly ArduPilot's 1 Hz rate, and **16 magic bytes
+produced 16 valid frames with none rejected** — perfectly clean framing, a world
+away from the noise signature of the unconnected line.
+
+### Full path verified
+
+Connecting a client to the TCP endpoint confirms the whole chain:
+
+```
+connected to tcp:127.0.0.1:5678
+bytes over TCP: 298 in 12s
+CRC-valid frames: 14
+   sys   1 msg     0 HEARTBEAT              x13
+   sys   1 msg   111 TIMESYNC               x1
+
+END-TO-END: FC -> UART2 -> mavlink-router -> TCP 5678  ==> WORKING
+```
+
+### Note on the low data rate
+
+~23 bytes/sec looks thin, but it is correct for an idle link: ArduPilot only
+sends HEARTBEAT and TIMESYNC until a ground station connects and requests data
+streams. Once Mission Planner or QGroundControl attaches, it asks for ATTITUDE,
+GPS_RAW_INT, VFR_HUD and the rest, and the rate rises substantially. A quiet link
+is not a broken one.
+
+### Gotcha #18 — a wrong baud looks exactly like a disconnected wire
+
+With the FC at 468000 and the Pi at 57600, the symptom was ~3 bytes/sec of
+unframeable noise — indistinguishable at a glance from an unconnected pin. What
+separated the two hypotheses was the **baud sweep**: the byte count rose in
+proportion to the sampling rate at every setting, which is what an undriven pin
+does. A genuine 468000 stream sampled at 9600 would not have produced a clean
+proportional curve.
+
+The honest lesson is that the sweep pointed at the right answer for slightly the
+wrong reason — it correctly said "no rate here works", but the conclusion drawn
+("nothing is driving the pin") was one of several possibilities, and the FC being
+set to a **non-standard rate outside the swept list** was another. The sweep
+covered 9600-921600 in the usual doublings; 468000 is not among them. Sweeping a
+list can only exonerate the rates on the list.
+
+Worth adding to the checklist: **read the baud off the flight controller's own
+configuration** rather than inferring it from the wire.

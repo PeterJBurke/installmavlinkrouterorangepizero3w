@@ -7,9 +7,9 @@ without re-deriving anything.
 
 ## One-line status
 
-Everything on the Orange Pi side is **built, installed, and verified end to end**.
-The **only** untested link is the flight controller itself — no FC has ever been
-attached.
+**WORKING END TO END.** A flight controller is attached and HEARTBEAT flows
+FC -> UART2 -> mavlink-router -> TCP 5678, CRC-verified at both ends.
+Verified 2026-09-17.
 
 ---
 
@@ -61,14 +61,27 @@ sudo rm /etc/sudoers.d/010-mavlink-claude
 | UART2 is really on pins 11/13 | manual §3.16.5, schematic p.18, and `gpio readall` all agree |
 | Overlay works | pins 11/13 moved `ALT14` → `ALT2` exactly when `overlays=uart2` was added |
 | Transmit works | 16 bytes @300 baud took 0.62 s vs 0.53 s theoretical |
-| **Receive + physical pins work** | **loopback: jumper pin 11↔13, token sent and received** |
+| **Receive + physical pins work** | loopback: jumper pin 11↔13, token sent and received |
+| **FC link works** | **15 CRC-valid HEARTBEATs in 15 s, sys 1, 0 rejected** |
+| **TCP output works** | **client on :5678 saw 13 HEARTBEATs in 12 s** |
 | Installer is idempotent | run 5+ times, no ill effects |
 
 `./test_serial.sh` reports **all checks passed**.
 
 ---
 
-## THE NEXT STEP — flight controller
+## The FC is connected and working
+
+Wiring in use: Pi pin **11 -> FC RX**, pin **13 -> FC TX**, pin **14 -> FC GND**.
+FC telemetry port at **57600** (it was found set to 468000, which produced pure
+noise — see journal gotcha #18).
+
+Connect a ground station to **`tcp:192.168.1.146:5678`**.
+
+Expect only ~23 bytes/sec when idle: ArduPilot sends just HEARTBEAT and TIMESYNC
+until a GCS requests data streams. That is normal, not a fault.
+
+### Original wiring instructions (kept for reference)
 
 Power **both** devices off. Then three wires:
 
