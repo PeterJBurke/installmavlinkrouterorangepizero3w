@@ -167,6 +167,7 @@ sudo MLR_DEVICE=/dev/ttyS0 ./install.sh       # use UART0 on pins 8/10 instead
 | `MLR_FORCE_SOURCE` | `0` | `1` = always build from source |
 | `MLR_KEEP_CONSOLE` | `0` | `1` = keep the serial console on UART0 |
 | `MLR_UART_OVERLAY` | *derived from device* | overlay to enable (`uart2`/`uart6`/`uart7`/`uart8`) |
+| `MLR_WIFI_POWERSAVE_OFF` | `1` | disable Wi-Fi power save; `0` to leave it alone |
 
 ---
 
@@ -314,7 +315,10 @@ will not boot.
 | `--listen` shows 0 bytes | FC unpowered, TX/RX swapped, no shared GND | recheck wiring table |
 | `--listen` shows bytes but no frames | wrong baud | match the FC's `SERIALn_BAUD` |
 | Writes hang forever | you used `/dev/ttyS1` | use `/dev/ttyS2` |
-| GCS cannot connect | firewall or wrong IP | `ss -ltn \| grep 5678`, `hostname -I` |
+| GCS cannot connect | wrong IP (the Pi is on DHCP) | run `./test_serial.sh` — section 6 prints the current address |
+| Telemetry freezes or drops in flight | Wi-Fi power save | `./test_serial.sh` section 5; fix with `sudo ./install.sh` |
+| Only ~23 bytes/sec arriving | normal when idle | ArduPilot sends only HEARTBEAT/TIMESYNC until a GCS requests streams |
+| Noise, no frames, at every baud | FC set to a non-standard rate | read the baud from the FC's own config — ours was at 468000 |
 | Garbage on the FC at boot | you are on UART0; U-Boot prints there | switch to UART2 (pins 11/13) |
 
 ---

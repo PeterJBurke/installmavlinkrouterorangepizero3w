@@ -925,3 +925,83 @@ list can only exonerate the rates on the list.
 
 Worth adding to the checklist: **read the baud off the flight controller's own
 configuration** rather than inferring it from the wire.
+
+---
+
+## 14. Hardening after first flight-controller contact
+
+### 14.1 Gotcha #19 — Wi-Fi power save will bite you in the air
+
+Found while debugging a connection problem:
+
+```
+$ iw dev wlan0 get power_save
+Power save: on
+```
+
+The adapter sleeps between beacons. Invisible when browsing; on a telemetry link
+it produces latency spikes and brief inbound stalls, which surface as the ground
+station freezing or dropping mid-flight. A textbook "works on the bench, flaky in
+the air" cause, and one that is very hard to diagnose once airborne.
+
+`install.sh` now disables it persistently via a NetworkManager drop-in (default
+on; set `MLR_WIFI_POWERSAVE_OFF=0` to skip):
+
+```
+# /etc/NetworkManager/conf.d/99-mavlink-wifi-powersave-off.conf
+[connection]
+wifi.powersave = 2
+```
+
+A drop-in in `conf.d` is used rather than `nmcli connection modify` so that the
+setting applies to **every** Wi-Fi connection — it still holds after joining a
+different network in the field. It is also applied immediately with
+`iw dev <dev> set power_save off` rather than waiting for a reconnect, and
+`test_serial.sh` gained a check so a regression is caught.
+
+Note `nmcli ... show` still reports `802-11-wireless.powersave: 0 (default)`
+afterwards, because the drop-in changes NetworkManager's *global default* rather
+than the per-connection property. The effective state is what matters, and
+`iw dev wlan0 get power_save` confirms `off`.
+
+### 14.2 Verifying CRC_EXTRA against live traffic
+
+The sniffer's `CRC_EXTRA` table was written from memory, and at first it reported
+`unknown msgid: 104` — many real messages were being skipped because they were
+missing from the table.
+
+With a live ArduPilot stream available, every candidate value could be *tested*
+rather than trusted: capture 12 s of traffic, and for each message id count how
+many frames pass and fail CRC with the proposed value.
+
+```
+msgid  pass  fail   verdict
+    0    12     0   CRC_EXTRA CORRECT
+    1    24     0   CRC_EXTRA CORRECT
+   ...
+  241    24     0   CRC_EXTRA CORRECT
+
+total validated frames: 565     (22 message types, zero failures)
+```
+
+This caught two values that were simply wrong in the first draft — `116` and
+`165` — before they shipped. They do not appear in this FC's stream, so they were
+corrected from the dialect definitions and are flagged as unverified in the
+table; a wrong `CRC_EXTRA` only causes that one message type to be ignored, and
+can never produce a false positive.
+
+Result: valid frames per capture rose from 371/477 candidates to **471/477**, and
+unknown msgids fell from 104 to 5.
+
+### 14.3 Final measured state
+
+```
+bytes read: 15560  (1556.0 bytes/sec)
+CRC-valid MAVLink frames: 471
+  AHRS2 x40, ATTITUDE x40, VFR_HUD x40, AHRS x20, GLOBAL_POSITION_INT x20,
+  SYS_STATUS x20, POWER_STATUS x20, MEMINFO x20, NAV_CONTROLLER_OUTPUT x20,
+  MISSION_CURRENT x20, SERVO_OUTPUT_RAW x20, RC_CHANNELS x20, ...
+HEARTBEAT present - the flight controller is talking.
+```
+
+`./test_serial.sh` — **all checks passed**. The project is complete.

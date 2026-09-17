@@ -159,8 +159,23 @@ case "$DEVICE" in
         ;;
 esac
 
+# ------------------------------------------------------------ 4b. link health
+hdr "5. Wi-Fi link health"
+WDEV="$(iw dev 2>/dev/null | awk '/Interface/{print $2; exit}')"
+if [ -n "${WDEV:-}" ]; then
+    PS="$(iw dev "$WDEV" get power_save 2>/dev/null | awk '{print $3}')"
+    if [ "$PS" = "off" ]; then
+        pass "$WDEV power save is off (good for a telemetry link)"
+    else
+        fail "$WDEV power save is ON — causes latency spikes and dropped telemetry"
+        note "fix: sudo ./install.sh   (or: sudo iw dev $WDEV set power_save off)"
+    fi
+else
+    note "no wireless interface found — skipping"
+fi
+
 # ---------------------------------------------------------------- 5. software
-hdr "5. mavlink-router"
+hdr "6. mavlink-router"
 if command -v mavlink-routerd >/dev/null 2>&1; then
     pass "mavlink-routerd installed: $(mavlink-routerd --version 2>/dev/null)"
 else
@@ -188,7 +203,7 @@ fi
 
 # ---------------------------------------------------------------- 6. loopback
 if [ "$MODE" = "loopback" ]; then
-    hdr "6. Loopback test"
+    hdr "7. Loopback test"
     read -r PIN_TX PIN_RX PIN_GND PIN_LABEL <<<"$(pins_for_device "$DEVICE")"
     echo "        Jumper header ${c_bld}pin $PIN_TX${c_off} to ${c_bld}pin $PIN_RX${c_off} ($PIN_LABEL TX to RX), then press Enter."
     read -r _
@@ -216,7 +231,7 @@ fi
 
 # ------------------------------------------------------- 7. listen for the FC
 if [ "$MODE" = "listen" ]; then
-    hdr "7. Listening for MAVLink from the flight controller (${LISTEN_SECS}s)"
+    hdr "8. Listening for MAVLink from the flight controller (${LISTEN_SECS}s)"
     if systemctl is-active --quiet mavlink-router.service 2>/dev/null; then
         echo "        stopping mavlink-router so we can read the port directly..."
         sudo systemctl stop mavlink-router.service
@@ -232,14 +247,31 @@ dev, secs = sys.argv[1], int(sys.argv[2])
 # A frame counts as MAVLink only if its X.25 CRC checks out. Without this, any
 # stray 0xFE/0xFD in line noise looks like a frame and the tool lies to you --
 # which it did, reporting "MAVLink detected!" on an unconnected pin.
-CRC_EXTRA = {0:50, 1:124, 2:137, 4:237, 22:220, 24:24, 27:144, 29:115, 30:39,
-             32:185, 33:104, 35:244, 36:222, 42:28, 62:183, 65:118, 74:20,
-             77:143, 111:34, 116:127, 125:203, 147:154, 165:47, 193:71,
-             241:90, 253:83}
-NAMES = {0:"HEARTBEAT", 1:"SYS_STATUS", 2:"SYSTEM_TIME", 24:"GPS_RAW_INT",
-         27:"RAW_IMU", 30:"ATTITUDE", 33:"GLOBAL_POSITION_INT",
-         36:"SERVO_OUTPUT_RAW", 42:"MISSION_CURRENT", 62:"NAV_CONTROLLER_OUTPUT",
-         65:"RC_CHANNELS", 74:"VFR_HUD", 147:"BATTERY_STATUS", 241:"VIBRATION",
+# CRC_EXTRA per message id. A frame counts as MAVLink only if its X.25 CRC
+# checks out -- without this, any stray 0xFE/0xFD in line noise looks like a
+# frame and the tool lies to you (it did exactly that on an unconnected pin).
+#
+# Values marked (v) were verified against live ArduPilot traffic on this rig:
+# 565 frames across 22 message types, zero CRC failures. The rest are from the
+# MAVLink dialect definitions and are unverified here -- a wrong value only
+# causes that one message type to be ignored, never a false positive.
+CRC_EXTRA = {
+    0:50,    1:124,   2:137,   24:24,   27:144,  29:115,  30:39,   33:104,   # (v)
+    36:222,  42:28,   62:183,  65:118,  74:20,   111:34,  125:203, 136:1,    # (v)
+    147:154, 152:208, 163:127, 178:47,  193:71,  241:90,                     # (v)
+    4:237,   22:220,  32:185,  34:237,  35:244,  77:143,  116:76,  129:46,
+    137:195, 150:134, 164:154, 165:21,  168:1,   182:229, 253:83,
+}
+NAMES = {0:"HEARTBEAT", 1:"SYS_STATUS", 2:"SYSTEM_TIME", 4:"PING",
+         22:"PARAM_VALUE", 24:"GPS_RAW_INT", 27:"RAW_IMU", 29:"SCALED_PRESSURE",
+         30:"ATTITUDE", 32:"LOCAL_POSITION_NED", 33:"GLOBAL_POSITION_INT",
+         34:"RC_CHANNELS_SCALED", 35:"RC_CHANNELS_RAW", 36:"SERVO_OUTPUT_RAW",
+         42:"MISSION_CURRENT", 62:"NAV_CONTROLLER_OUTPUT", 65:"RC_CHANNELS",
+         74:"VFR_HUD", 77:"COMMAND_ACK", 111:"TIMESYNC", 116:"SCALED_IMU2",
+         125:"POWER_STATUS", 129:"SCALED_IMU3", 136:"TERRAIN_REPORT",
+         137:"SCALED_PRESSURE2", 147:"BATTERY_STATUS", 150:"SENSOR_OFFSETS",
+         152:"MEMINFO", 163:"AHRS", 164:"SIMSTATE", 165:"HWSTATUS", 168:"WIND",
+         178:"AHRS2", 182:"AHRS3", 193:"EKF_STATUS_REPORT", 241:"VIBRATION",
          253:"STATUSTEXT"}
 
 def x25(data, extra):

@@ -17,6 +17,7 @@
 #   MLR_FORCE_SOURCE=1        always compile from source, ignore the prebuilt binary
 #   MLR_KEEP_CONSOLE=1        do NOT free the serial console (use with MLR_DEVICE=/dev/ttySN)
 #   MLR_UART_OVERLAY=uart2    additionally enable a UART overlay (uart2|uart6|uart7|uart8)
+#   MLR_WIFI_POWERSAVE_OFF=0  do NOT disable Wi-Fi power save (default is to disable it)
 #
 # Everything this script does, and why, is documented in docs/BUILD_JOURNAL.md.
 
@@ -31,6 +32,7 @@ MLR_TCP_PORT="${MLR_TCP_PORT:-5678}"
 MLR_FORCE_SOURCE="${MLR_FORCE_SOURCE:-0}"
 MLR_KEEP_CONSOLE="${MLR_KEEP_CONSOLE:-0}"
 MLR_UART_OVERLAY="${MLR_UART_OVERLAY:-}"
+MLR_WIFI_POWERSAVE_OFF="${MLR_WIFI_POWERSAVE_OFF:-1}"
 
 # UART2/6/7/8 are disabled in the base DTB and need a device-tree overlay.
 # Derive the overlay from the chosen device unless the caller named one.
@@ -325,6 +327,39 @@ if id -nG "$TARGET_USER" 2>/dev/null | tr ' ' '\n' | grep -x dialout >/dev/null;
     ok "User '$TARGET_USER' already in dialout"
 else
     usermod -aG dialout "$TARGET_USER" && ok "Added '$TARGET_USER' to dialout (effective next login)"
+fi
+
+# --- 3e. Wi-Fi power save ----------------------------------------------------
+# The adapter sleeps between beacons to save power. Harmless when browsing, but
+# on a telemetry link it adds latency spikes and brief inbound stalls, which
+# present as the ground station freezing or dropping mid-flight. Classic
+# "works on the bench, flaky in the air" cause.
+if [ "$MLR_WIFI_POWERSAVE_OFF" = "1" ]; then
+    NMCONF_DIR="/etc/NetworkManager/conf.d"
+    if [ -d /etc/NetworkManager ]; then
+        mkdir -p "$NMCONF_DIR"
+        cat > "$NMCONF_DIR/99-mavlink-wifi-powersave-off.conf" <<'NMCONF'
+# Installed by installmavlinkrouterorangepizero3w
+# wifi.powersave = 2 means "disable". Applies to every Wi-Fi connection, so it
+# still holds after joining a different network in the field.
+[connection]
+wifi.powersave = 2
+NMCONF
+        systemctl reload NetworkManager >/dev/null 2>&1 || \
+            systemctl restart NetworkManager >/dev/null 2>&1 || true
+        ok "Wi-Fi power save disabled persistently (NetworkManager drop-in)"
+    else
+        warn "NetworkManager not found; Wi-Fi power save left as-is"
+    fi
+
+    # Apply immediately too, rather than waiting for a reconnect.
+    if command -v iw >/dev/null 2>&1; then
+        for wdev in $(iw dev 2>/dev/null | awk '/Interface/{print $2}'); do
+            iw dev "$wdev" set power_save off >/dev/null 2>&1 || true
+        done
+    fi
+else
+    info "Leaving Wi-Fi power save alone (MLR_WIFI_POWERSAVE_OFF=0)"
 fi
 
 # ------------------------------------------------------------- 4. main.conf

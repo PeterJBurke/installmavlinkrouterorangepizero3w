@@ -55,6 +55,13 @@ if [ -f /etc/udev/rules.d/99-mavlink-router-uart.rules ]; then
     ok "Removed udev rule"
 fi
 
+# 3c. wifi power save drop-in
+if [ -f /etc/NetworkManager/conf.d/99-mavlink-wifi-powersave-off.conf ]; then
+    rm -f /etc/NetworkManager/conf.d/99-mavlink-wifi-powersave-off.conf
+    systemctl reload NetworkManager >/dev/null 2>&1 || true
+    ok "Removed Wi-Fi power-save drop-in (power save returns to default)"
+fi
+
 # 4. restore the serial console
 if [ -f "$ENVFILE" ]; then
     changed=0
