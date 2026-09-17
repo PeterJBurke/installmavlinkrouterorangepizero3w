@@ -226,52 +226,114 @@ if [ "$MODE" = "listen" ]; then
     echo "        reading $DEVICE at $BAUD baud..."
     python3 - "$DEVICE" "$LISTEN_SECS" <<'PY'
 import os, sys, time
+
 dev, secs = sys.argv[1], int(sys.argv[2])
+
+# A frame counts as MAVLink only if its X.25 CRC checks out. Without this, any
+# stray 0xFE/0xFD in line noise looks like a frame and the tool lies to you --
+# which it did, reporting "MAVLink detected!" on an unconnected pin.
+CRC_EXTRA = {0:50, 1:124, 2:137, 4:237, 22:220, 24:24, 27:144, 29:115, 30:39,
+             32:185, 33:104, 35:244, 36:222, 42:28, 62:183, 65:118, 74:20,
+             77:143, 111:34, 116:127, 125:203, 147:154, 165:47, 193:71,
+             241:90, 253:83}
+NAMES = {0:"HEARTBEAT", 1:"SYS_STATUS", 2:"SYSTEM_TIME", 24:"GPS_RAW_INT",
+         27:"RAW_IMU", 30:"ATTITUDE", 33:"GLOBAL_POSITION_INT",
+         36:"SERVO_OUTPUT_RAW", 42:"MISSION_CURRENT", 62:"NAV_CONTROLLER_OUTPUT",
+         65:"RC_CHANNELS", 74:"VFR_HUD", 147:"BATTERY_STATUS", 241:"VIBRATION",
+         253:"STATUSTEXT"}
+
+def x25(data, extra):
+    crc = 0xFFFF
+    for b in tuple(data) + (extra,):
+        t = (b ^ (crc & 0xFF)) & 0xFF
+        t = (t ^ (t << 4)) & 0xFF
+        crc = ((crc >> 8) ^ (t << 8) ^ (t << 3) ^ (t >> 4)) & 0xFFFF
+    return crc
+
+# Capture first, parse afterwards. Parsing a growing stream means one bogus
+# length byte from noise can stall the scan; over a fixed buffer we can simply
+# skip an unusable candidate and resync.
 fd = os.open(dev, os.O_RDONLY | os.O_NONBLOCK)
-end, total, v1, v2, seen = time.time() + secs, 0, 0, 0, {}
-buf = b""
-while time.time() < end:
+end_at = time.time() + secs
+data = bytearray()
+while time.time() < end_at:
     try:
         chunk = os.read(fd, 4096)
-    except BlockingIOError:
-        time.sleep(0.05); continue
-    if not chunk:
-        time.sleep(0.05); continue
-    total += len(chunk); buf += chunk
-    while buf:
-        i2, i1 = buf.find(b'\xfd'), buf.find(b'\xfe')
-        idx = min([x for x in (i2, i1) if x >= 0], default=-1)
-        if idx < 0 or len(buf) - idx < 12:
-            buf = buf[-280:]; break
-        magic = buf[idx]
-        if magic == 0xFD:
-            plen = buf[idx+1]; total_len = 12 + plen
-            if len(buf) - idx < total_len: buf = buf[idx:]; break
-            msgid = buf[idx+7] | (buf[idx+8] << 8) | (buf[idx+9] << 16)
-            sysid = buf[idx+5]; v2 += 1
-        else:
-            plen = buf[idx+1]; total_len = 8 + plen
-            if len(buf) - idx < total_len: buf = buf[idx:]; break
-            msgid = buf[idx+5]; sysid = buf[idx+3]; v1 += 1
-        seen.setdefault((sysid, msgid), 0)
-        seen[(sysid, msgid)] += 1
-        buf = buf[idx+total_len:]
+    except (BlockingIOError, OSError):
+        time.sleep(0.02); continue
+    if chunk:
+        data += chunk
+    else:
+        time.sleep(0.02)
 os.close(fd)
-print(f"        bytes read: {total}")
-print(f"        MAVLink v1 frames: {v1}   v2 frames: {v2}")
-if total == 0:
-    print("        \033[0;31mNothing received.\033[0m Check: FC powered? TX/RX swapped? baud wrong? GND connected?")
-elif v1 + v2 == 0:
-    print("        \033[0;33mBytes arrived but no MAVLink frames\033[0m — almost certainly the wrong baud rate.")
+
+buf = bytes(data); n = len(buf)
+good = {}; bad = 0; unknown = 0; magic = 0; i = 0
+while i < n:
+    m = buf[i]
+    if m not in (0xFD, 0xFE):
+        i += 1; continue
+    magic += 1
+    if m == 0xFE:
+        if n - i < 8: i += 1; continue
+        plen = buf[i+1]; flen = 8 + plen
+        if n - i < flen: i += 1; continue
+        msgid = buf[i+5]; sysid = buf[i+3]; body = buf[i+1:i+6+plen]
+    else:
+        if n - i < 12: i += 1; continue
+        plen = buf[i+1]; flen = 12 + plen
+        if n - i < flen: i += 1; continue
+        msgid = buf[i+7] | (buf[i+8] << 8) | (buf[i+9] << 16)
+        sysid = buf[i+5]; body = buf[i+1:i+10+plen]
+    ck = buf[i+flen-2] | (buf[i+flen-1] << 8)
+    ex = CRC_EXTRA.get(msgid)
+    if ex is None:
+        unknown += 1; i += 1; continue
+    if x25(body, ex) == ck:
+        good[(sysid, msgid)] = good.get((sysid, msgid), 0) + 1
+        i += flen
+    else:
+        bad += 1; i += 1
+
+rate = n / float(secs) if secs else 0.0
+nframes = sum(good.values())
+print("        bytes read: %d  (%.1f bytes/sec)" % (n, rate))
+print("        CRC-valid MAVLink frames: %d" % nframes)
+print("        (magic bytes seen: %d, rejected by CRC: %d, unknown msgid: %d)"
+      % (magic, bad, unknown))
+print("")
+
+if n == 0:
+    print("        \033[0;31mNothing received at all.\033[0m")
+    print("        -> FC unpowered, TX/RX not crossed, or GND not shared.")
+elif nframes == 0 and rate < 50:
+    print("        \033[0;31mNo valid MAVLink. This looks like LINE NOISE, not data.\033[0m")
+    print("        Only %.1f bytes/sec, none of it correctly framed. An undriven" % rate)
+    print("        UART pin produces exactly this: a byte count that rises with baud.")
+    print("        -> The FC's TX is probably not reaching this pin.")
+    print("        -> A connected, idle UART TX holds the line at ~3.3V. Measure it:")
+    print("           floating or 0V means it is not connected.")
+    print("        -> Also confirm GND is shared and the FC is powered and booted.")
+elif nframes == 0:
+    print("        \033[0;31mNo valid MAVLink frames, but %.0f bytes/sec is a real stream.\033[0m" % rate)
+    print("        -> Wiring is good; the BAUD RATE is wrong.")
+    print("        -> Try: ./test_serial.sh --scan   to sweep common rates.")
 else:
-    names = {0: "HEARTBEAT", 1: "SYS_STATUS", 24: "GPS_RAW_INT", 30: "ATTITUDE",
-             33: "GLOBAL_POSITION_INT", 253: "STATUSTEXT"}
-    print("        \033[0;32mMAVLink detected!\033[0m messages by (sysid, msgid):")
-    for (s, m), n in sorted(seen.items(), key=lambda kv: -kv[1])[:12]:
-        print(f"          sys {s:3d}  msg {m:5d} {names.get(m,''):20s} x{n}")
-    if any(m == 0 for (_, m) in seen):
-        print("        \033[0;32mHEARTBEAT present — the flight controller is talking.\033[0m")
+    print("        \033[0;32mReal MAVLink confirmed (CRC verified).\033[0m")
+    for (sid, mid), c in sorted(good.items(), key=lambda kv: -kv[1])[:12]:
+        print("          sys %3d  msg %5d %-22s x%d" % (sid, mid, NAMES.get(mid, ""), c))
+    if any(mid == 0 for (_, mid) in good):
+        print("        \033[0;32mHEARTBEAT present - the flight controller is talking.\033[0m")
+    else:
+        print("        \033[0;33mNo HEARTBEAT yet - the FC may still be booting.\033[0m")
+
+sys.exit(0 if nframes else 1)
 PY
+    if [ $? -eq 0 ]; then
+        pass "MAVLink received from the flight controller"
+    else
+        fail "no valid MAVLink received on $DEVICE"
+    fi
     [ "${RESTART:-0}" = "1" ] && sudo systemctl start mavlink-router.service
 fi
 

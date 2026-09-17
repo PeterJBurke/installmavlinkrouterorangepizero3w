@@ -776,3 +776,88 @@ gpio mode 6 in                       # release when done
 This is unambiguous because the even row otherwise holds 5V (pins 2, 4), GND
 (6, 14, 20, ...) and UART0 (8, 10) — no other steady 3.3V. The header's other
 3.3V pins (1 and 17) are in the odd row.
+
+---
+
+## 12. First flight-controller attempt — and a sniffer that lied
+
+FC wired to pins 11/13/14, both devices powered. `./test_serial.sh --listen 15`
+reported:
+
+```
+        bytes read: 52
+        MAVLink v1 frames: 1   v2 frames: 0
+        MAVLink detected! messages by (sysid, msgid):
+          sys 227  msg   200                      x1
+```
+
+**This was wrong.** The sniffer searched for a `0xFE`/`0xFD` magic byte and
+never verified the checksum, so one stray noise byte was reported as a MAVLink
+frame. The summary then printed "All checks passed".
+
+### Gotcha #17 — validate the CRC, or a sniffer will invent frames
+
+52 bytes in 15 s is ~3.5 bytes/sec. ArduPilot's HEARTBEAT alone is ~20 bytes/sec
+and a real telemetry stream is thousands. The "frame" was noise.
+
+A baud sweep made the real story obvious:
+
+| baud | bytes/sec |
+|---:|---:|
+| 9600 | 1.2 |
+| 19200 | 1.0 |
+| 38400 | 2.8 |
+| 57600 | 3.0 |
+| 115200 | 6.0 |
+| 230400 | 12.8 |
+| 460800 | 9.8 |
+| 921600 | 36.8 |
+
+**The byte count scales with the baud rate.** That is the signature of a UART
+sampling an *undriven* line: sample faster, frame more noise into bytes. Real
+data peaks sharply at one rate and is garbage at the others. The raw dump showed
+long runs of `00` and `ff` with no repeating structure.
+
+### The fix, and how it was verified
+
+`test_serial.sh` now implements the MAVLink X.25 CRC (CRC-16/MCRF4XX) with a
+`CRC_EXTRA` table for common messages, and counts a frame only if the checksum
+matches. Verified three ways before being trusted:
+
+```
+check1  x25("123456789") -> 0x6F91   (known CRC-16/MCRF4XX vector)     PASS
+check2  synthetic v1 + v2 HEARTBEAT frames built with correct CRCs
+check3  those frames buried in random noise, 3 seeds -> both found      PASS
+        20000 bytes of PURE NOISE -> 0 frames
+        (153 magic bytes seen, all correctly rejected)                  PASS
+```
+
+That last line is the point: the old parser reported a frame on noise; the new
+one rejects 153 candidates from 20 kB of noise without a single false positive.
+
+Two further bugs were found while doing this:
+
+- **The parser could stall.** Scanning a *growing* buffer, a noise byte claiming
+  a large payload length made it `break` to wait for more data and never resync,
+  losing every real frame after it. On a noisy line — exactly this case — the
+  scan died at the first bogus length byte. Fixed by capturing for the whole
+  window first and parsing the fixed buffer afterwards, where an unusable
+  candidate is simply skipped. The planted-frame test caught this: 0 of 2 frames
+  found before the fix, 2 of 2 after.
+- **The listen verdict was never counted.** It printed its findings but did not
+  touch the failure tally, so a run that found nothing still ended with "All
+  checks passed". The Python block now exits non-zero and the shell records a
+  `FAIL`.
+
+### Current diagnosis
+
+```
+bytes read: 22  (3.7 bytes/sec)
+CRC-valid MAVLink frames: 0
+magic bytes seen: 0
+  FAIL  no valid MAVLink received on /dev/ttyS2
+```
+
+Nothing is driving pin 13. Since the pin-11↔13 loopback passes, the Pi's UART is
+proven good, so the fault is downstream: the FC's TX not reaching pin 13, GND not
+shared, the FC not powered/booted, or its telemetry port not emitting MAVLink.
