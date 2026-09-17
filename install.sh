@@ -338,10 +338,17 @@ if [ "$MLR_WIFI_POWERSAVE_OFF" = "1" ]; then
     NMCONF_DIR="/etc/NetworkManager/conf.d"
     if [ -d /etc/NetworkManager ]; then
         mkdir -p "$NMCONF_DIR"
-        cat > "$NMCONF_DIR/99-mavlink-wifi-powersave-off.conf" <<'NMCONF'
+        # NetworkManager reads conf.d in ALPHABETICAL order and the LAST file
+        # wins. The stock image ships 'default-wifi-powersave-on.conf', and
+        # 'default-' sorts AFTER '99-' because 'd' > '9' in ASCII -- so a 99-
+        # prefix is silently overridden and power save comes back on the next
+        # reconnect. Use a 'zz-' prefix so we genuinely sort last.
+        rm -f "$NMCONF_DIR/99-mavlink-wifi-powersave-off.conf"
+        cat > "$NMCONF_DIR/zz-mavlink-wifi-powersave-off.conf" <<'NMCONF'
 # Installed by installmavlinkrouterorangepizero3w
-# wifi.powersave = 2 means "disable". Applies to every Wi-Fi connection, so it
-# still holds after joining a different network in the field.
+# wifi.powersave = 2 means "disable". The 'zz-' prefix matters: NetworkManager
+# reads conf.d alphabetically and the stock 'default-wifi-powersave-on.conf'
+# would otherwise override this and switch power save back on.
 [connection]
 wifi.powersave = 2
 NMCONF

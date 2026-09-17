@@ -1005,3 +1005,51 @@ HEARTBEAT present - the flight controller is talking.
 ```
 
 `./test_serial.sh` — **all checks passed**. The project is complete.
+
+---
+
+## 15. Gotcha #20 — the Wi-Fi power-save fix was silently overridden
+
+Discovered during a final audit: `iw dev wlan0 get power_save` reported **on**
+again, despite §14.1 having disabled it and verified it.
+
+The drop-in was still present and correct. The problem was ordering:
+
+```
+$ ls /etc/NetworkManager/conf.d/ | sort
+10-override-wifi-random-mac-disable.conf
+20-override-wifi-powersave-disable.conf
+99-mavlink-wifi-powersave-off.conf        <- ours, wifi.powersave = 2
+default-wifi-powersave-on.conf            <- stock,  wifi.powersave = 3
+```
+
+**NetworkManager reads `conf.d` alphabetically and the last file wins.**
+`default-` sorts *after* `99-`, because `d` (0x64) > `9` (0x39) in ASCII. The
+stock image ships `default-wifi-powersave-on.conf` setting `wifi.powersave = 3`
+(enabled), so it overrode ours on every reconnect.
+
+The installer reported success both times. The setting was applied immediately
+with `iw ... set power_save off`, which is why the post-install check passed —
+and then NetworkManager put it back at the next reconnect, which is exactly what
+`wifi-restore.sh` triggered during the hotspot test.
+
+**Fix:** use a `zz-` prefix so the file genuinely sorts last, and remove the old
+`99-` one:
+
+```
+/etc/NetworkManager/conf.d/zz-mavlink-wifi-powersave-off.conf
+```
+
+Verified properly this time, by bouncing the link rather than just reading the
+value after applying it:
+
+```
+before: off
+after reconnect: off        # previously this would have come back "on"
+link: wlan0:connected
+```
+
+> **Lesson:** a numeric prefix does not guarantee last position when other files
+> start with letters. And "apply it now" plus "write a config file" can both
+> succeed while the config is still being overridden — test persistence by
+> forcing the code path that re-reads it, not by reading back what you just set.
