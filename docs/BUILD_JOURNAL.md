@@ -711,3 +711,68 @@ into a buffer. Compare `/dev/ttyS1`, which blocked for the full 10 s timeout.
 
 **Still outstanding:** no flight controller has been attached. Everything is
 proven up to and including the port transmitting, but not end to end.
+
+---
+
+## 11. Loopback test — the Pi-side signal path is proven
+
+With a jumper between header **pin 11 and pin 13** and nothing else connected:
+
+```
+6. Loopback test
+        Jumper header pin 11 to pin 13 (UART2 TX to RX), then press Enter.
+        stopping mavlink-router for the test...
+  PASS  loopback OK — sent and received 'MAVLINK-ROUTER-LOOPBACK-2774'
+
+Summary
+  All checks passed.
+```
+
+This closes the last gap on the Pi side: bytes physically left pin 11, crossed the
+jumper, and were read back on pin 13. Previously we had only shown that writes
+*drained* at the expected rate; now the receive path and the physical pins are
+confirmed too.
+
+It is also an independent confirmation of the header numbering. The jumper was
+placed on the **6th and 7th pins down the odd row**. Had the odd column been
+numbered 1..20 sequentially (making those pins 6 and 7), the test would have
+failed — pin 6 is GND.
+
+### Note on reading the page-13 pinout diagram
+
+The diagram on manual page 13 does **not** print pin numbers; it shows two columns
+of dots and you must know the numbering scheme. On this 2x20 header the rows
+interleave, so going down one column steps by **2**:
+
+```
+left column:  pin = 2 * row - 1     ->  row 6 = pin 11, row 7 = pin 13
+right column: pin = 2 * row
+```
+
+The manual proves its own scheme: on page 13 `UART6_RX` sits in the left column
+and `UART6_TX` in the right column **at the same height**, and §3.16.5 gives them
+as PIN 23 and PIN 24 — consecutive numbers across the two columns at one row,
+which is only possible with interleaved numbering.
+
+Counting each column 1..20 instead is an easy mistake and puts UART2 on "pins 6
+and 7", which cannot be right: 6 and 7 are in *different* rows (6 is GND, 7 is
+PWM0-0), so no signal pair lands there.
+
+### Locating a pin physically without counting
+
+The Zero 3W has no header pads on the underside (the bottom carries the MicroSD
+slot, MIPI LCD, two camera FPC sockets, PCIe and UFS), so the usual "pin 1 is the
+square pad on the back" trick does not apply.
+
+Instead, drive a known pin and find it with a meter. Pin 12 is unused, and it sits
+directly opposite pin 11:
+
+```
+gpio mode 6 out && gpio write 6 1    # wPi 6 == physical pin 12 -> 3.3V
+# probe the EVEN row: the only pin reading 3.3V is pin 12
+gpio mode 6 in                       # release when done
+```
+
+This is unambiguous because the even row otherwise holds 5V (pins 2, 4), GND
+(6, 14, 20, ...) and UART0 (8, 10) — no other steady 3.3V. The header's other
+3.3V pins (1 and 17) are in the odd row.

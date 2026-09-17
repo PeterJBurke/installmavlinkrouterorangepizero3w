@@ -206,7 +206,7 @@ if [ "$MODE" = "loopback" ]; then
     exec 3<&-; exec 3>&-
     if [ "${GOT:-}" = "$MSG" ]; then
         pass "loopback OK — sent and received '$MSG'"
-        note "UART0 TX and RX both work. Remove the jumper and wire the FC."
+        note "$PIN_LABEL TX (pin $PIN_TX) and RX (pin $PIN_RX) both work. Remove the jumper and wire the FC."
     else
         fail "loopback failed — sent '$MSG', got '${GOT:-<nothing>}'"
         note "Check the jumper is between pin $PIN_TX and pin $PIN_RX, and that the checks above all passed."
