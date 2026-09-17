@@ -248,7 +248,8 @@ installed but cannot talk to a flight controller. The differences:
    falls back to compiling.
 
 The full investigation — including the commands used to prove each of these — is
-in **[docs/BUILD_JOURNAL.md](docs/BUILD_JOURNAL.md)**.
+in **[docs/BUILD_JOURNAL.md](docs/BUILD_JOURNAL.md)**. Current project state and
+the next step are in **[docs/HANDOFF.md](docs/HANDOFF.md)**.
 
 ---
 
@@ -262,6 +263,7 @@ main.conf                                  reference mavlink-router config
 bin/orangepizero3w-aarch64/mavlink-routerd prebuilt binary (glibc >= 2.42)
 bin/orangepizero3w-aarch64/SHA256SUMS      checksum
 docs/BUILD_JOURNAL.md                      how this was built, and every gotcha
+docs/HANDOFF.md                            current state, what is verified, what is next
 ```
 
 ### Prebuilt binary provenance
