@@ -5,11 +5,18 @@ without re-deriving anything.
 
 ---
 
-## One-line status
+## One-line status (updated 2026-09-17)
 
 **WORKING END TO END.** A flight controller is attached and HEARTBEAT flows
 FC -> UART2 -> mavlink-router -> TCP 5678, CRC-verified at both ends.
-Verified 2026-09-17.
+
+Also on this board: the Wi-Fi hotspot failsafe from
+[OrangePiHotspotIfNoWifi](https://github.com/PeterJBurke/OrangePiHotspotIfNoWifi)
+is installed and enabled at boot, and AP mode is proven on this radio.
+
+Late fix (gotcha #20): Wi-Fi power save had been silently re-enabled by the
+stock `default-wifi-powersave-on.conf`, which sorts after a `99-` prefix in
+NetworkManager's conf.d. Now `zz-`-prefixed and verified across a reconnect.
 
 ---
 
