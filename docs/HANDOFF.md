@@ -206,6 +206,68 @@ The DataFlash parser written for it is `~/loganalysis/dflog.py` (~90 lines, no
 dependencies — `pymavlink` is not installable on this machine). Neither is
 committed to a repo yet.
 
+## Open item (back burner) — Tailscale is userspace-only on this Pi
+
+**Not urgent. Nothing is broken that blocks the drone work.** Parked 2026-09-25.
+
+Tailscale on this board runs with no TUN device:
+
+```
+/etc/default/tailscaled:  FLAGS="--tun=userspace-networking"
+tailscale status:         TUN : False
+interfaces:               lo, wlan0        <- no tailscale0
+/dev/net/tun:             missing; tun kernel module not loaded
+```
+
+**Consequence:** ordinary programs cannot reach tailnet addresses from this Pi.
+`ssh`, `scp`, `curl` to a `100.x` address get routed to the Wi-Fi default gateway
+and time out. Verified against three peers, all of which fail identically.
+`tailscale status` and `tailscale ping` still work, because those are tailscaled
+talking to itself — which makes the fault look like a remote problem when it is
+local.
+
+**Workaround that does work:** `tailscale ssh user@host`, and `tailscale nc`.
+These proxy through userspace and sidestep the missing interface. Files were
+moved to `llmuavdev` this way:
+
+```bash
+tar czf - logfiles | tailscale ssh root@llmuavdev 'cd ~ && tar xzf -'
+```
+
+**Possible fix, untested:**
+
+```bash
+sudo modprobe tun && ls -l /dev/net/tun      # does the kernel have it?
+# if yes:
+sudo sed -i 's/^FLAGS=.*/FLAGS=""/' /etc/default/tailscaled
+sudo systemctl restart tailscaled
+```
+
+If `modprobe tun` fails, this Orange Pi kernel lacks the driver and userspace
+mode is the only option — in which case `tailscale ssh` is the permanent answer,
+not a workaround.
+
+**A diagnostic trap worth remembering:** llmuavdev's ufw *is* restrictive
+(`default deny (incoming)`, only `tailscale0` allowed), and that was initially
+blamed for the failure. It was not the cause — the packets never left this Pi.
+A plausible cause on the far end masked the real one on the near end. Check
+`ip route get <tailnet-ip>` first: if it resolves via the LAN gateway rather than
+`tailscale0`, the problem is local.
+
+## Log analysis artifacts moved off this board
+
+The barometer analysis and all flight logs were copied to
+`llmuavdev:~/logfiles` on 2026-09-25 — 23 files, 42 MB, **checksum-verified**,
+owned root:root. That machine is where further analysis will happen.
+
+Contents: `CRASH_ANALYSIS_2026-09-25.md`, `README.md`, `analyzelogfiles.md`,
+`25Sept2026LogFiles/` (9 incident logs), `16Sept2026/` (6 comparison logs), and
+`tools/` with the dependency-free DataFlash parser.
+
+The originals are **still on this Pi** in `~/inbox` and `~/loganalysis` — copied,
+not moved, pending confirmation. They are the only other copy, and this board is
+a reflash candidate.
+
 ## Key facts that are easy to get wrong
 
 1. **`/dev/ttyS1` is Bluetooth**, not a spare UART. Looks free (`root:dialout`,
