@@ -5,7 +5,7 @@ without re-deriving anything.
 
 ---
 
-## One-line status (updated 2026-09-17)
+## One-line status (updated 2026-09-25)
 
 **WORKING END TO END.** A flight controller is attached and HEARTBEAT flows
 FC -> UART2 -> mavlink-router -> TCP 5678, CRC-verified at both ends.
@@ -17,6 +17,10 @@ is installed and enabled at boot, and AP mode is proven on this radio.
 Late fix (gotcha #20): Wi-Fi power save had been silently re-enabled by the
 stock `default-wifi-powersave-on.conf`, which sorts after a `99-` prefix in
 NetworkManager's conf.d. Now `zz-`-prefixed and verified across a reconnect.
+
+**2026-09-25: the aircraft has flown under command from this board, and a
+hardware fault was found. Read "Flight testing" and "KNOWN AIRCRAFT FAULT"
+below before commanding any takeoff.**
 
 ---
 
@@ -134,6 +138,73 @@ Flight controller side (ArduPilot): the telemetry port needs
 `SERIALn_PROTOCOL = 2` (MAVLink2) and `SERIALn_BAUD = 57` (57600).
 
 ---
+
+## Flight testing, 2026-09-25
+
+Commanded flight works end to end from this board. `~/dronetest/takeoff.py`
+(local to this SD card, **not yet committed to any repo**) drives the aircraft
+over mavlink-router on TCP 5678:
+
+```bash
+python3 ~/dronetest/takeoff.py --status      # read-only
+python3 ~/dronetest/takeoff.py --alt 2.0     # GUIDED takeoff
+python3 ~/dronetest/takeoff.py --yaw -30     # yaw left 30 deg (CONDITION_YAW)
+python3 ~/dronetest/takeoff.py --land
+```
+
+Verified in flight: GUIDED takeoff to 2.0 m held steadily for 20 s; a 30° left
+yaw executed exactly (heading 61° → 31°) with altitude held to ±0.02 m; LAND
+commanded and the aircraft auto-disarmed on touchdown.
+
+Two bugs found and fixed in that script, both worth not re-introducing:
+
+* **The MAVLink v2 header is six bytes** — `len, incompat, compat, seq, sysid,
+  compid`. It was written with five, so every field after it shifted by one and
+  the flight controller silently discarded the frame. The symptom was no
+  COMMAND_ACK; the script aborted before arming, which is the correct behaviour.
+* `SET_MODE` packs its fields by descending size (`custom_mode` uint32 first).
+  Use `DO_SET_MODE` via `COMMAND_LONG` instead — it returns an ACK, so the mode
+  change can be verified rather than assumed.
+
+The script refuses altitudes outside 0.5–5.0 m, refuses to arm if already armed,
+aborts if any step is unacknowledged, auto-disarms if a takeoff is refused after
+arming, and (added after the incident below) **lands automatically if the
+reported altitude exceeds the target by more than 1.5 m**. That guard has fired
+in anger and worked.
+
+## KNOWN AIRCRAFT FAULT — barometer
+
+**Do not command a GUIDED or AUTO takeoff from the ground until this is fixed.**
+
+The SPL06-001 barometer on the MatekF405-TE is unshielded and produces
+multi-metre errors. Two mechanisms, both measured from the flight logs:
+
+1. **Aerodynamic transient at throttle-up** — pressure moves up to 33 Pa in
+   400 ms (≈2.7 m of apparent altitude), repeatable across all six throttle-up
+   events in one log, with temperature changing less than 0.13 °C. This is what
+   causes the runaway climb.
+2. **Thermal drift of the zero point** — the board self-heats to ~48 °C, prop
+   wash cools it, and the reported ground altitude drifts **+0.109 m per °C**
+   (r² = 0.724, 824 samples). Over one session that is more than a metre. It is
+   why the aircraft reported 4.02–4.29 m while motionless on the floor.
+
+It is the **only** altitude source: `RNGFND1_TYPE = 0`, `BARO2/3_DEVID = 0`, and
+`EK3_SRC1/2/3_POSZ` all `= 1`. Nothing can out-vote it.
+
+Consequence: two commanded takeoffs climbed into the roof of a 20 ft cage.
+STABILIZE is unaffected (no altitude feedback), and **LOITER entered while
+already airborne is demonstrably safe** — logged at a steady 34% throttle with
+the barometer swinging 4 m beneath it, because it captures its reference from a
+settled hover. The failure is specific to capturing an altitude reference on the
+ground, mid-glitch, with full throttle authority.
+
+Fix: open-cell foam over the sensor (addresses both mechanisms), and ideally a
+downward rangefinder for work at 1–2 m indoors.
+
+Full analysis, with the log evidence: `~/inbox/CRASH_ANALYSIS_2026-09-25.md`.
+The DataFlash parser written for it is `~/loganalysis/dflog.py` (~90 lines, no
+dependencies — `pymavlink` is not installable on this machine). Neither is
+committed to a repo yet.
 
 ## Key facts that are easy to get wrong
 
