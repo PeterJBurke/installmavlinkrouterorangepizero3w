@@ -5,6 +5,49 @@ without re-deriving anything.
 
 ---
 
+## Session end — 2026-09-26
+
+Stopped here deliberately; the barometer work is finished and verified. Nothing
+is broken, nothing is half-done, and nothing is left only on this SD card except
+the three tools noted below.
+
+### Suggested next steps, in no particular order
+
+**Order a downward rangefinder.** VL53L1X or TFmini-S, roughly $20. Set
+`RNGFND1_TYPE`, then `EK3_SRC1_POSZ = 2` and `WPNAV_RFND_USE = 1`. This is now
+the only real hardware gap: relative climb is trustworthy, but absolute altitude
+is not, so fences, terrain following, AUTO at fixed altitudes and precision
+landing all remain unreliable. It is a capability upgrade, not a bug fix.
+
+**Commit the flight tools to this repo.** `~/dronetest/takeoff.py`,
+`barotest.py` and `logdl.py` exist only on this SD card. They are reusable and a
+reflash loses them. (Copies are on `llmuavdev:~/logfiles/tools/`, but they are
+not version-controlled.)
+
+**Pin down the `LOG_REQUEST_END` CRC_EXTRA.** The value 203 currently in
+`logdl.py` is wrong. A log download leaves ArduPilot refusing to arm with
+"Disarm for log download", and the release message is discarded. It was cleared
+by brute-forcing all 256 candidates, which works but is ugly and will recur on
+the next download. Determining the right value is a ten-minute job.
+
+**Fly a pattern rather than a hover.** Takeoff, yaw and land are all proven.
+`MAV_CMD_NAV_WAYPOINT` or `SET_POSITION_TARGET_LOCAL_NED` would fly a square in
+the cage. GPS is at 29 satellites, so horizontal position is in good shape.
+
+### Housekeeping
+
+Revoke the passwordless sudo when the work is done:
+
+```bash
+sudo rm /etc/sudoers.d/010-mavlink-claude
+```
+
+### Still parked (unchanged, not urgent)
+
+Tailscale on this Pi runs `--tun=userspace-networking` with no TUN device, so
+ordinary programs cannot reach tailnet addresses. `tailscale ssh` works and is
+how files reach `llmuavdev`. See the section below.
+
 ## Status: barometer fix COMPLETE and fully verified (2026-09-26)
 
 Four consecutive successful GUIDED takeoffs, including the 1 m case that
