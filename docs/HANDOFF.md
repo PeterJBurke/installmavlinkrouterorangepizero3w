@@ -248,6 +248,64 @@ aircraft is in the cage and you do not want to disassemble it.
 Today's log is at `~/inbox/26Sept2026/log_010.bin` (1,596,462 bytes, verified
 `a3 95` header, zero missing bytes). **Not yet copied to llmuavdev.**
 
+## RESOLVED 26 Sept — barometer fixed, GUIDED takeoff verified
+
+**The barometer fault below is fixed.** Open-cell foam placed directly **on the
+sensor** (it had previously been under the SD card) plus a GPS moved 1 inch
+higher. Both error terms improved and the failure mechanism is gone.
+
+| | before | after |
+|---|---|---|
+| airflow transient @75% throttle | 27.4 Pa (2.28 m) | **7.6 Pa (0.63 m)** |
+| thermal drift | +0.109 m/°C | **+0.043 m/°C** |
+| error direction | reads **LOW** → commands climb | reads **HIGH** → levels off early |
+| character | coherent 400 ms step | oscillation (the EKF filters it) |
+| GPS | 8–17 satellites | **28** |
+
+The direction change matters more than the magnitude: reading low is what drove
+full throttle into the cage roof. Sensor noise floor with motors off is 0.8 Pa.
+
+**Three consecutive GUIDED takeoffs to 2.0 m:**
+
+| | overshoot | settled | held |
+|---|---|---|---|
+| 1 | +0.35 m | 1.95–2.07 m | 25 s |
+| 2 | +0.13 m | 1.93–2.12 m | 25 s |
+| 3 | +0.21 m | 1.93–2.03 m | 25 s |
+
+Against 25 Sept, where 1.52 m commanded reached 5.44 m and 1.0 m reached 4.31 m,
+both with throttle saturated. **GUIDED takeoff is now cleared for use.**
+
+### Guard change that mattered
+
+The runaway guard originally compared *absolute* altitude against a fixed
+ceiling. The absolute reference drifts metres between sessions — it read 3.94 m
+while sitting on the ground — so the guard would have fired instantly on every
+takeoff. It now measures **climb relative to the resting altitude**, captured at
+arm time. Default margin is target + 0.75 m (`MLR_CEILING` to override).
+
+### Still outstanding
+
+* **The absolute altitude reference is unreliable.** −1.6 m in the morning,
+  +3.9 to +4.2 m in the afternoon, creeping 3.91 → 4.02 → 4.23 m across three
+  flights. Relative climb is trustworthy, so GUIDED takeoff and altitude hold
+  are fine; fences, terrain following and AUTO at fixed altitudes are not.
+  A downward rangefinder is the real fix for a 10 ft cage.
+* **The 1 m takeoff has not been retested** — that case previously auto-disarmed
+  mid-hover at 0.85 m. Skipped because the pack reached 3.68 V/cell. **First
+  thing to try next session.**
+
+### New tool
+
+`~/dronetest/barotest.py` measures the pressure transient at throttle-up and
+prints a pass/borderline/fail verdict. It reads throttle from **RC channel 3**,
+because this FC reports 0 for `VFR_HUD.throttle` and `SERVO_OUTPUT_RAW` even
+while armed and flying — an earlier version trusted those and silently measured
+nothing, producing two meaningless "passes".
+
+Results and today's log are on `llmuavdev:~/logfiles/26Sept2026/`
+(`RESULTS.md`, `log_010.bin`, `barotests.jsonl`), tools in `~/logfiles/tools/`.
+
 ## KNOWN AIRCRAFT FAULT — barometer
 
 **Do not command a GUIDED or AUTO takeoff from the ground until this is fixed.**
