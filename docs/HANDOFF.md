@@ -5,47 +5,55 @@ without re-deriving anything.
 
 ---
 
-## NEXT ACTION (set 2026-09-26, before a battery swap)
+## Status: barometer fix COMPLETE and fully verified (2026-09-26)
 
-**Fly the 1 m GUIDED takeoff.** It is the last untested case and the one
-originally asked for ("3 feet").
+Four consecutive successful GUIDED takeoffs, including the 1 m case that
+previously failed outright. **No open test items.**
+
+| date | commanded | result | |
+|---|---|---|---|
+| 25 Sept | 1.0 m | auto-disarmed mid-hover at 0.85 m | FAILED |
+| 25 Sept | 1.5 m | ran to 5.44 m, into the cage roof | FAILED |
+| 26 Sept | 2.0 m | +0.35 m overshoot, ±0.1 m hold, 25 s | PASS |
+| 26 Sept | 2.0 m | +0.13 m overshoot, ±0.1 m hold, 25 s | PASS |
+| 26 Sept | 2.0 m | +0.21 m overshoot, ±0.1 m hold, 25 s | PASS |
+| 26 Sept | **1.0 m** | **+0.08 m overshoot, ±0.01 m hold, 25 s** | **PASS** |
+
+The 1 m flight is the tightest of them all, which is the strongest possible
+result: low hover is the hardest case for a barometer — deepest in ground
+effect, largest error relative to target — and it is the exact command that
+failed on 25 Sept.
+
+### Two operational notes for future sessions
+
+**After a battery swap or FC reboot, telemetry stops at heartbeats only.** The
+other streams must be requested or the tooling sees nothing useful:
 
 ```bash
-cd ~/mlinstall/installmavlinkrouterorangepizero3w && claude --continue
-# or just:
-python3 ~/dronetest/takeoff.py --alt 1.0
-python3 ~/dronetest/takeoff.py --land
+# SET_MESSAGE_INTERVAL (511) per message, or legacy REQUEST_DATA_STREAM (66)
 ```
 
-After a battery swap the flight controller reboots, so:
+Symptom: `takeoff.py --status` shows the FC as present but reports no battery,
+GPS or altitude.
 
-* the barometer reference resets — the ground reading may be anywhere from
-  −2 to +4 m. This does not matter: the runaway guard measures climb relative to
-  the resting altitude captured at arm time.
-* **wait ~60 s stationary for the EKF to converge** before arming, or arming is
-  refused. The script aborts cleanly without arming if so — just wait and retry.
+**The EKF takes ~1–2 minutes to converge after a reboot and flaps while doing
+it.** Observed sequence: `horiz_abs=ok`, then `NO`, then `ok`, then `NO`, with
+`const_pos` toggling, before settling. Wait for a sample with
+`horiz_abs=ok, horiz_rel=ok, const_pos=no` before arming, rather than trusting
+the first good reading.
 
-### What we are testing
+**The ground reference varies wildly between sessions** — −0.94 m this session
+against +4.23 m at the end of the last. That ~5 m swing is why the runaway guard
+measures climb relative to the resting altitude rather than against a fixed
+ceiling. Do not reintroduce an absolute comparison.
 
-On 25 Sept this exact command climbed to 0.99 m then **auto-disarmed mid-hover
-at 0.85 m**, because the land detector was fooled by a bad altitude estimate.
+### Remaining hardware gap (not blocking)
 
-* **Holds ~1 m for 25 s** → the fix covers the hardest case. Low hover is where
-  a barometer is weakest (ground effect, largest error relative to altitude), so
-  passing there means passing everywhere in this cage. Nothing further needed.
-* **Auto-disarms again** → the residual 0.63 m excursion still bites near the
-  ground. Not a failure of the fix, just its limit — and it makes the downward
-  rangefinder the clear next purchase rather than a nice-to-have.
-
-A drop from 1 m is survivable either way.
-
-### State at power-down
-
-Three consecutive GUIDED takeoffs to 2.0 m verified (see below). Battery ran
-down to 3.68 V/cell resting, 3.57 under load, which is why the 1 m test was
-deferred rather than squeezed in — a tired pack would have confounded the
-result. Everything is backed up to `llmuavdev:~/logfiles/26Sept2026/`; nothing
-is left only on the SD card.
+The absolute altitude reference is still unreliable. Relative climb is
+trustworthy, so GUIDED takeoff and altitude hold are cleared for use; fences,
+terrain following and AUTO at fixed altitudes are not. A downward rangefinder
+(VL53L1X or TFmini-S, with `EK3_SRC1_POSZ = 2`) is the fix, and is now the
+natural next hardware step rather than a workaround for a fault.
 
 ## One-line status (updated 2026-09-25)
 
