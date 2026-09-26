@@ -5,6 +5,48 @@ without re-deriving anything.
 
 ---
 
+## NEXT ACTION (set 2026-09-26, before a battery swap)
+
+**Fly the 1 m GUIDED takeoff.** It is the last untested case and the one
+originally asked for ("3 feet").
+
+```bash
+cd ~/mlinstall/installmavlinkrouterorangepizero3w && claude --continue
+# or just:
+python3 ~/dronetest/takeoff.py --alt 1.0
+python3 ~/dronetest/takeoff.py --land
+```
+
+After a battery swap the flight controller reboots, so:
+
+* the barometer reference resets — the ground reading may be anywhere from
+  −2 to +4 m. This does not matter: the runaway guard measures climb relative to
+  the resting altitude captured at arm time.
+* **wait ~60 s stationary for the EKF to converge** before arming, or arming is
+  refused. The script aborts cleanly without arming if so — just wait and retry.
+
+### What we are testing
+
+On 25 Sept this exact command climbed to 0.99 m then **auto-disarmed mid-hover
+at 0.85 m**, because the land detector was fooled by a bad altitude estimate.
+
+* **Holds ~1 m for 25 s** → the fix covers the hardest case. Low hover is where
+  a barometer is weakest (ground effect, largest error relative to altitude), so
+  passing there means passing everywhere in this cage. Nothing further needed.
+* **Auto-disarms again** → the residual 0.63 m excursion still bites near the
+  ground. Not a failure of the fix, just its limit — and it makes the downward
+  rangefinder the clear next purchase rather than a nice-to-have.
+
+A drop from 1 m is survivable either way.
+
+### State at power-down
+
+Three consecutive GUIDED takeoffs to 2.0 m verified (see below). Battery ran
+down to 3.68 V/cell resting, 3.57 under load, which is why the 1 m test was
+deferred rather than squeezed in — a tired pack would have confounded the
+result. Everything is backed up to `llmuavdev:~/logfiles/26Sept2026/`; nothing
+is left only on the SD card.
+
 ## One-line status (updated 2026-09-25)
 
 **WORKING END TO END.** A flight controller is attached and HEARTBEAT flows
