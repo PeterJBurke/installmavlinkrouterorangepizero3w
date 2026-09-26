@@ -172,6 +172,82 @@ arming, and (added after the incident below) **lands automatically if the
 reported altitude exceeds the target by more than 1.5 m**. That guard has fired
 in anger and worked.
 
+## Barometer, 26 Sept: foam fixed the thermal term, not the airflow term
+
+Peter added foam **on the sensor** and moved the GPS 1 inch higher. A short
+STABILIZE + LOITER flight (log 10, 86 s, max 0.93 m) was pulled over MAVLink and
+compared against 25 Sept.
+
+**Thermal drift — improved 61%:**
+
+| | slope | r² |
+|---|---|---|
+| 25 Sept, no foam | +0.109 m/°C | 0.724 |
+| 26 Sept, foam | **+0.043 m/°C** | 0.779 |
+
+Reported ground level moved only 0.20 m across a 4.2 °C swing, against 1.09 m
+before. The foam is genuinely insulating.
+
+**Aerodynamic transient — NOT improved.** Spin-up #1 at 10 Hz:
+
+```
+     t     ThO    BAlt     Press     Temp
+ 367.1   0.00   -1.83   100686.5   41.60    steady
+ 367.8   0.24   -4.27   100713.9   41.63    <- +27.4 Pa in 0.7 s = 2.28 m
+ 368.6   0.33   -0.95   100676.5   41.65    <- then -37 Pa the other way
+```
+
+27.4 Pa sits squarely inside the pre-foam range of 10.8–32.9 Pa. Temperature
+*rises* 0.11 °C through the spike, confirming it is aerodynamic, not thermal.
+
+Note this flight only reached 0.93 m and 37% throttle. The spike scales with
+throttle, so **treat 27 Pa as a floor, not a worst case** for a real takeoff.
+
+**Since the foam is reportedly already over the sensor**, the remaining
+candidates are: wrong foam type (must be open-cell, not closed-cell — closed-cell
+seals the port and makes transients worse), foam not sealed at its edges so air
+tracks around it, or the whole FC cavity pressurising under prop wash, which foam
+over one 2 mm sensor cannot fix.
+
+**Target for "fixed":** spin-up spike under ~5 Pa (0.4 m). That is the number
+that decides whether GUIDED takeoff is safe. Until then GUIDED/AUTO takeoff from
+the ground remains unsafe; STABILIZE and LOITER are fine and today adds more
+evidence for that.
+
+**GPS move was a clear win:** 23 satellites, up from 8–17.
+
+## Pulling logs over MAVLink — and the arming trap it causes
+
+`~/dronetest/logdl.py` downloads FC logs over the telemetry link:
+
+```bash
+python3 ~/dronetest/logdl.py --list
+python3 ~/dronetest/logdl.py --get 10 --out ~/inbox/26Sept2026
+```
+
+Measured throughput: **2.06 KB/s**. A 1.6 MB log took 13 minutes; a 6 MB log
+would take ~50. Pulling the SD card is seconds — use MAVLink only when the
+aircraft is in the cage and you do not want to disassemble it.
+
+### Three mistakes worth not repeating
+
+1. **`LOG_ENTRY` arrives as 13 bytes, not 14.** MAVLink v2 truncates trailing
+   zero bytes, so a `len(pay) >= 14` check rejects every valid frame and the
+   tool reports "no logs". Pad payloads before unpacking.
+2. **A log download blocks arming.** ArduPilot refuses with
+   `"Disarm for log download"` until it receives `LOG_REQUEST_END`. The
+   `CRC_EXTRA` of 203 used for that message is **wrong** — the FC silently
+   discarded it and the aircraft could not be armed. Cleared by sending
+   `LOG_REQUEST_END` with all 256 candidate `CRC_EXTRA` values; bad ones are
+   dropped harmlessly. **Determine the correct value before downloading again.**
+3. Do not pipe a long download through `tail` — it buffers, so no progress is
+   visible until it exits. And do not set the timeout barely above the expected
+   duration; the tool writes the file only at the end, so a timeout loses
+   everything.
+
+Today's log is at `~/inbox/26Sept2026/log_010.bin` (1,596,462 bytes, verified
+`a3 95` header, zero missing bytes). **Not yet copied to llmuavdev.**
+
 ## KNOWN AIRCRAFT FAULT — barometer
 
 **Do not command a GUIDED or AUTO takeoff from the ground until this is fixed.**
