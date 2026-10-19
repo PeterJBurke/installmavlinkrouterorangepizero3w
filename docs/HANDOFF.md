@@ -7,8 +7,13 @@ without re-deriving anything.
 
 ## Session end — 2026-10-19 — student autoland scripts (no flying)
 
-No flights this session. All desk work on two scripts in `~/autoland/`.
-The aircraft was not touched; the barometer fix from 26 Sept still stands.
+No flights this session, but the FC was powered and connected, and
+`dronefly.py` was run against it repeatedly on the bench. Props never spun and
+the airframe was not moved; the barometer fix from 26 Sept still stands.
+
+Two findings here are more important than the script work: the current sensor
+is uncalibrated, and the battery failsafe on the aircraft is switched off. Both
+are below.
 
 ### The script to use: `~/autoland/dronefly.py`
 
@@ -51,34 +56,112 @@ sits wherever the model's own sense of LiPo chemistry puts it, probably around
 likely fire less often than half the time. This was measured but never
 confirmed against the live model — see the blocker below.
 
-### Three blockers, none fixed
+### RESOLVED — dronefly.py now runs end to end on the live aircraft
 
-**1. `pymavlink` is not installed anywhere on this board.** Verified: not in
-system Python, not in `~/portkey-env/`, and `mavutil.py` does not exist on
-disk. `dronefly.py` imports it on line 19 and will fail immediately. Every
-tool of mine that talks to the FC (`takeoff.py`, `logdl.py`, `dflog.py`)
-hand-rolls MAVLink framing, which is why they work and why this gap went
-unnoticed. An earlier session assumed pymavlink was present. It is not.
+Four bugs, all found and fixed by actually running it. Verified output:
 
-**2. `dronefly.py` must run under the venv, not system Python.** `portkey_ai`
-2.3.4 lives in `~/portkey-env/` (Python 3.14) and nowhere else. So the fix for
-both (1) and (2) is:
-
-```bash
-~/portkey-env/bin/pip install pymavlink
-~/portkey-env/bin/python ~/autoland/dronefly.py
+```
+Heartbeat OK
+Battery 7.61 V (3.81 V/cell)  armed=False  mode=STABILIZE
+DECISION:  HOLD     (model said 'HOLD')
+Holding. Nothing sent.
 ```
 
-Not done this session — needs network and was outside the ask.
+**1. Environment.** The venv with both `pymavlink` 2.4.50 and `portkey_ai` is
+`~/ardupilot_land/venv` — not `~/portkey-env`, which has only portkey_ai. An
+earlier note in this section claimed pymavlink was absent board-wide; that was
+wrong. Run with `~/ardupilot_land/venv/bin/python`.
 
-**3. The FC battery failsafe is UNREAD, not verified.** With no threshold in
-the script, `BATT_LOW_VOLT` / `BATT_FS_LOW_ACT` are the only deterministic
-floor beneath an LLM that could say HOLD all the way down. An attempt to read
-them over the link returned zero `PARAM_VALUE` replies. The likely cause is
-wrong `CRC_EXTRA` guesses for msgids 20 and 22 (214 and 220 were tried) — the
-same class of bug as the known-bad `LOG_REQUEST_END` value. **Do not read the
-silence as "failsafe is unset."** Confirm in Mission Planner before any
-student flies this.
+**2. `SYS_STATUS` was never arriving.** Symptom: `No SYS_STATUS within 10s`
+while `land_now.py` worked fine. Cause: HEARTBEAT streams unprompted, but
+`SYS_STATUS` has a stream rate of 0 on this link until something asks. The
+script now sends `SET_MESSAGE_INTERVAL` (511) **and** legacy
+`REQUEST_DATA_STREAM` (66) before reading, with one retry. Measured: arrives in
+0.5 s, 6/6 follow-up frames. The old error message blamed boot timing, which
+was a red herring — waiting longer would never have helped.
+
+**3. `max_tokens` is rejected by this model.** `azure-openai error: Unsupported
+parameter: 'max_tokens' is not supported with this model. Use
+'max_completion_tokens' instead.` Renaming alone is **not** enough: the budget
+covers internal reasoning, which runs before any visible text. Measured on
+`@zotgpt-api-azure/gpt-5.5`:
+
+| budget | 4.14 V/cell | 3.85 | 3.70 | 3.60 | 3.50 |
+|---|---|---|---|---|---|
+| 5 | `''` finish_reason=`length` — no answer at all | | | | |
+| 512 | HOLD / 74 tok | HOLD / 55 | HOLD / 159 | **LAND / 228** | LAND / 66 |
+
+Note the spike at the boundary: 228 tokens at 3.60 V/cell against 55 at 3.85.
+The ambiguous cases cost the most, which is exactly why 256 was too tight (89%
+consumed). Set to **512**. A one-word reply still burns 55–160 completion
+tokens of invisible reasoning.
+
+**4. An empty reply used to parse as HOLD.** `decision = "LAND" if
+re.search(...) else "HOLD"` turned a failed call into "keep flying" on a
+decision that was never made. Now an empty `content` raises, `HOLD` wins ties,
+and `"Do not land"` can no longer be read as a landing command.
+
+### Where the model's own threshold sits
+
+Between **3.70 V/cell (HOLD)** and **3.60 V/cell (LAND)**, measured. That is
+below the 3.80 V/cell in-flight median, so LAND will fire *less* than half the
+time in practice. This is the accepted cost of letting the model decide instead
+of naming a number — do not "fix" it by reintroducing a threshold.
+
+### VOLTAGE ONLY — the current sensor is not calibrated
+
+User instruction, emphatic: *"my current is not calibrated. do not use the
+current, only the battery voltage!!"*
+
+Measured at rest, props stopped: **−0.35 A**, giving `current_consumed` =
+**−93 mAh**, so the coulomb integrator runs *backwards* and
+`battery_remaining` climbs **above 100%** — observed 101 → 103% over a few
+minutes at 3.82 V/cell. An older flight log shows the mirror of the same fault:
+89% reported at 3.82 V/cell.
+
+```
+BATT_MONITOR 4   BATT_CAPACITY 3300   BATT_AMP_OFFSET 0.01328   BATT_AMP_PERVLT 43.65
+```
+
+Cause is either an offset error (zeroing needs ≈0.0053) or reversed shunt
+polarity — **undetermined**. Distinguish by throttling up strapped down: more
+negative means the shunt is backwards, swinging positive means it is just the
+offset.
+
+`dronefly.py` no longer reads, prints or logs the percentage at all. Do not add
+it back.
+
+### SAFETY GAP — battery failsafe is disabled on the aircraft
+
+Read from the FC (this time with pymavlink, successfully — the earlier "unread"
+note was my wrong `CRC_EXTRA` guess, not a vehicle problem):
+
+```
+BATT_LOW_VOLT    6.1     (3.05 V/cell)
+BATT_CRT_VOLT    6.0     (3.00 V/cell)
+BATT_FS_LOW_ACT  0       <-- no action
+BATT_FS_CRT_ACT  0       <-- no action
+BATT_LOW_TIMER   10
+```
+
+Both actions **disabled**, thresholds below anything worth reaching. Combined
+with the deliberate absence of a threshold in `dronefly.py`, **nothing on this
+aircraft will bring it down on a flat pack.** The single LLM check is the only
+thing in the loop, and it is asked once, not continuously.
+
+Suggested, in Mission Planner, user's call — voltage failsafe is unaffected by
+the current-sensor fault, so it works today:
+`BATT_LOW_VOLT 7.0` + `BATT_FS_LOW_ACT 2` (RTL), `BATT_CRT_VOLT 6.8` +
+`BATT_FS_CRT_ACT 1` (Land). **Close this before any student flies it.**
+
+### Terminal output
+
+The script prints the exact prompt and the raw response, in colour: cyan prompt
+block, yellow role labels, blue response block, green/red `finish_reason`, and
+a green HOLD / red LAND decision badge. The prompt is built into `system_msg` /
+`user_msg` and printed from those variables, so screen text cannot drift from
+what was sent. Colour switches off when stdout is not a tty — verified zero
+escape sequences when redirected to a file.
 
 ### Also in `~/autoland/`
 
@@ -93,14 +176,16 @@ non-existent `/dev/serial0`.
 Port 5678 accepts multiple simultaneous clients, so these scripts and Mission
 Planner can be connected at the same time. mavlink-router handles the fan-out.
 
-### Untested
+### Still untested: the LAND branch
 
-Neither `dronefly.py` nor `land_now.py` has been run against a live flight
-controller. Everything verified this session was wording, arithmetic and
-imports. The parts that can only fail in flight are the `DO_SET_MODE` ACK
-path, whether `BATTERY_STATUS` arrives on this link at all, and whether the
-`.BIN` stamp lands on the same timeline as the mode change. One cage flight on
-a part-used pack would exercise both branches of the LLM decision.
+Every live run has taken the HOLD path, because today's pack sat at
+3.80–3.85 V/cell and the model says HOLD there. So no command has ever been
+sent from inside `dronefly.py`. The mode-change code is the same path
+`land_now.py` proved (DO_SET_MODE ack ACCEPTED, vehicle confirmed LAND), but it
+has not been exercised from this script. A pack below ~3.65 V/cell would do it.
+
+Also unverified: whether the `.BIN` statustext stamp lands on the same timeline
+as the mode change. That needs a log pull after a LAND run.
 
 ---
 
