@@ -40,21 +40,18 @@ system: You are a drone safety pilot. Use your own judgement about battery
         chemistry and risk. Reply with one word: LAND or HOLD.
 
 user:   The drone is hovering in a test cage, a few metres up. Its 2S LiPo
-        reads 7.40 V under hover load, which is 3.70 V per cell. The flight
-        controller estimates 46% remaining. Should it land now, or keep
-        hovering?
+        reads 7.60 V under hover load, which is 3.80 V per cell. This LiPo is
+        reused across many flights and must not be deep-discharged. Should it
+        land now, or keep hovering?
 ```
 
-`reported_pct` was already being read and logged but was previously withheld
-from the model; it is now in the prompt, so the model has two signals to weigh
-and can notice when they disagree. They often will — `BATT_CAPACITY` is 3300
-mAh and does not match the pack actually being flown.
+The percentage is NOT in the prompt — the current sensor is uncalibrated, see
+below. The closing sentence states the objective with no number in it; see the
+measured boundary table further down for what it is worth.
 
-Consequence: **the decision boundary is no longer ours and is not known.** It
-sits wherever the model's own sense of LiPo chemistry puts it, probably around
-3.5–3.7 V/cell, which is below the 3.80 V/cell in-flight median. So LAND will
-likely fire less often than half the time. This was measured but never
-confirmed against the live model — see the blocker below.
+Consequence: the boundary is the model's, not ours. It has since been measured
+rather than guessed — 50% at ~3.76 V/cell with the current wording. See the
+boundary section below.
 
 ### RESOLVED — dronefly.py now runs end to end on the live aircraft
 
@@ -92,21 +89,72 @@ covers internal reasoning, which runs before any visible text. Measured on
 | 512 | HOLD / 74 tok | HOLD / 55 | HOLD / 159 | **LAND / 228** | LAND / 66 |
 
 Note the spike at the boundary: 228 tokens at 3.60 V/cell against 55 at 3.85.
-The ambiguous cases cost the most, which is exactly why 256 was too tight (89%
-consumed). Set to **512**. A one-word reply still burns 55–160 completion
-tokens of invisible reasoning.
+The ambiguous cases cost the most, which is why 256 was too tight (89%
+consumed) and why 512 later proved too tight as well. Final value is **1024** —
+see the token-budget section below.
 
 **4. An empty reply used to parse as HOLD.** `decision = "LAND" if
 re.search(...) else "HOLD"` turned a failed call into "keep flying" on a
 decision that was never made. Now an empty `content` raises, `HOLD` wins ties,
 and `"Do not land"` can no longer be read as a landing command.
 
-### Where the model's own threshold sits
+### Where the decision boundary sits — measured, 5 calls per voltage
 
-Between **3.70 V/cell (HOLD)** and **3.60 V/cell (LAND)**, measured. That is
-below the 3.80 V/cell in-flight median, so LAND will fire *less* than half the
-time in practice. This is the accepted cost of letting the model decide instead
-of naming a number — do not "fix" it by reintroducing a threshold.
+The prompt ends with one sentence stating the OBJECTIVE and no number:
+*"This LiPo is reused across many flights and must not be deep-discharged."*
+That sentence is load-bearing. Without it the model applies the cell-damage
+floor (~3.0–3.3 V under load) and keeps flying well past the point a pilot
+would land — it answered HOLD at 3.71 V/cell, which is about 10% on a resting
+LiPo chart. With it:
+
+| V/cell | pack | decisions | LAND rate |
+|---|---|---|---|
+| 4.00 | 8.00 V | `hhhhh` | 0% |
+| 3.85 | 7.70 V | `hhhhh` | 0% |
+| 3.80 | 7.60 V | `hhhhh` | 0% |
+| **3.78** | 7.56 V | `LLhhh` | **40%** |
+| **3.76** | 7.52 V | `hLLLh` | **60%** |
+| **3.74** | 7.48 V | `hhLLL` | **60%** |
+| 3.71 | 7.42 V | `LLLLL` | 100% |
+| 3.68 | 7.36 V | `LLLLL` | 100% |
+| 3.60 | 7.20 V | `LLLLL` | 100% |
+
+Always HOLD at ≥3.80, genuinely undecided across **3.78–3.74**, always LAND at
+≤3.71. 50% point ≈ **3.76 V/cell (7.52 V)**.
+
+Measured boundary by prompt wording, same model, same day:
+
+| added sentence | 50% LAND point |
+|---|---|
+| none (facts only) | ~3.65 V/cell |
+| **"reused across many flights... must not be deep-discharged"** (in use) | **~3.76** |
+| "a cut-short flight costs nothing; a damaged pack costs a lot" | ~3.82 (too eager) |
+
+Why this matters pedagogically: the in-flight median on this airframe is
+3.80 V/cell, right at the top edge of the transition. So one ordinary battery
+walks a flight through solid HOLD → the stochastic band, where two teams at the
+same voltage get different answers → solid LAND. With the bare prompt the band
+sat at 3.66–3.62, which only 12% of logged in-flight samples ever reach, and
+teams would have seen HOLD every time.
+
+**Do not replace that sentence with a voltage.** Stating the objective keeps the
+decision the model's and keeps it stochastic; stating a number makes it a
+comparison, which is the thing the exercise exists to avoid.
+
+Caveat: one model (`@zotgpt-api-azure/gpt-5.5`), one day. A model update will
+move these numbers. Re-run the sweep before the class if it matters.
+
+### Token budget: 1024, and not negotiable downward
+
+`TOKEN_BUDGET = 1024`. `max_completion_tokens` covers invisible reasoning,
+which runs before any visible text, and an exhausted budget returns
+`content=""` with `finish_reason="length"` — no answer at all.
+
+Measured for a ONE-WORD reply: 55–74 tokens at the confident ends, 201–221 near
+the boundary with the bare prompt, and **109–523 once the prompt gives the model
+something to weigh**. At 512, two of six calls returned empty. At 1024, zero
+truncations in 55 calls. The ceiling is not billed, only tokens produced, so
+there is no saving in trimming it.
 
 ### VOLTAGE ONLY — the current sensor is not calibrated
 
@@ -176,16 +224,24 @@ non-existent `/dev/serial0`.
 Port 5678 accepts multiple simultaneous clients, so these scripts and Mission
 Planner can be connected at the same time. mavlink-router handles the fan-out.
 
-### Still untested: the LAND branch
+### Both branches now proven on the live aircraft
 
-Every live run has taken the HOLD path, because today's pack sat at
-3.80–3.85 V/cell and the model says HOLD there. So no command has ever been
-sent from inside `dronefly.py`. The mode-change code is the same path
-`land_now.py` proved (DO_SET_MODE ack ACCEPTED, vehicle confirmed LAND), but it
-has not been exercised from this script. A pack below ~3.65 V/cell would do it.
+The LAND path was exercised for real at the end of the session: the bench pack
+had drifted to **3.61 V/cell**, the model answered LAND unprompted, and the
+command went through.
 
-Also unverified: whether the `.BIN` statustext stamp lands on the same timeline
-as the mode change. That needs a log pull after a LAND run.
+```
+DECISION:  LAND    (model said 'LAND')
+LAND command acknowledged: result=0 (0 = accepted)
+... llm=LAND mode_before=STABILIZE mode_after=LAND
+```
+
+HOLD was proven repeatedly earlier at 3.80–3.85 V/cell. So connect → read
+voltage → prompt → decide → command → log is verified end to end, both ways,
+on the real FC. Props never spun; the aircraft was disarmed throughout.
+
+Still unverified: whether the `.BIN` statustext stamp lands on the same
+timeline as the mode change. That needs a log pull after a LAND run.
 
 ---
 
