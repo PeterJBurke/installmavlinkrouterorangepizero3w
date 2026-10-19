@@ -1,7 +1,106 @@
 # Handoff — state of play
 
-Last updated: 2026-09-17. Written so a fresh session (or a future you) can pick up
+Last updated: 2026-10-19. Written so a fresh session (or a future you) can pick up
 without re-deriving anything.
+
+---
+
+## Session end — 2026-10-19 — student autoland scripts (no flying)
+
+No flights this session. All desk work on two scripts in `~/autoland/`.
+The aircraft was not touched; the barometer fix from 26 Sept still stands.
+
+### The script to use: `~/autoland/dronefly.py`
+
+This is the student assignment ("Phase III: LLM decides whether to land").
+Reviewed and rewritten this session. Ignore the `.bak` and the scratchpad
+copies; `dronefly.py` is the live one.
+
+**Design decision that drove everything else: there is deliberately no voltage
+threshold anywhere in the script.** Earlier in the session it had `V_LAND` and
+`V_OK` constants, and the prompt quoted them to the model. Those are gone.
+The reasoning, in the user's words: *"the whole point of the exercise is to
+have the LLM make a decision that is not entirely predictable and uses its own
+discretion. if there is a hard rule like a cutoff voltage explicit, there is no
+point to use the llm, it could just be one line of code."*
+
+Do not reintroduce a threshold into the prompt. If a future session wants a
+deterministic floor, it belongs in the flight controller's own failsafe
+parameters, not in the prompt text.
+
+The prompt is now two messages, facts only:
+
+```
+system: You are a drone safety pilot. Use your own judgement about battery
+        chemistry and risk. Reply with one word: LAND or HOLD.
+
+user:   The drone is hovering in a test cage, a few metres up. Its 2S LiPo
+        reads 7.40 V under hover load, which is 3.70 V per cell. The flight
+        controller estimates 46% remaining. Should it land now, or keep
+        hovering?
+```
+
+`reported_pct` was already being read and logged but was previously withheld
+from the model; it is now in the prompt, so the model has two signals to weigh
+and can notice when they disagree. They often will — `BATT_CAPACITY` is 3300
+mAh and does not match the pack actually being flown.
+
+Consequence: **the decision boundary is no longer ours and is not known.** It
+sits wherever the model's own sense of LiPo chemistry puts it, probably around
+3.5–3.7 V/cell, which is below the 3.80 V/cell in-flight median. So LAND will
+likely fire less often than half the time. This was measured but never
+confirmed against the live model — see the blocker below.
+
+### Three blockers, none fixed
+
+**1. `pymavlink` is not installed anywhere on this board.** Verified: not in
+system Python, not in `~/portkey-env/`, and `mavutil.py` does not exist on
+disk. `dronefly.py` imports it on line 19 and will fail immediately. Every
+tool of mine that talks to the FC (`takeoff.py`, `logdl.py`, `dflog.py`)
+hand-rolls MAVLink framing, which is why they work and why this gap went
+unnoticed. An earlier session assumed pymavlink was present. It is not.
+
+**2. `dronefly.py` must run under the venv, not system Python.** `portkey_ai`
+2.3.4 lives in `~/portkey-env/` (Python 3.14) and nowhere else. So the fix for
+both (1) and (2) is:
+
+```bash
+~/portkey-env/bin/pip install pymavlink
+~/portkey-env/bin/python ~/autoland/dronefly.py
+```
+
+Not done this session — needs network and was outside the ask.
+
+**3. The FC battery failsafe is UNREAD, not verified.** With no threshold in
+the script, `BATT_LOW_VOLT` / `BATT_FS_LOW_ACT` are the only deterministic
+floor beneath an LLM that could say HOLD all the way down. An attempt to read
+them over the link returned zero `PARAM_VALUE` replies. The likely cause is
+wrong `CRC_EXTRA` guesses for msgids 20 and 22 (214 and 220 were tried) — the
+same class of bug as the known-bad `LOG_REQUEST_END` value. **Do not read the
+silence as "failsafe is unset."** Confirm in Mission Planner before any
+student flies this.
+
+### Also in `~/autoland/`
+
+`land_now.py` — forces LAND mode over `tcp:127.0.0.1:5678`, using
+`MAV_CMD_DO_SET_MODE` (176) inside `COMMAND_LONG` (76) with param1 = 1
+(`MAV_MODE_FLAG_CUSTOM_MODE_ENABLED`) and param2 = the mode id from
+`mode_mapping()`. Confirms via HEARTBEAT, falls back to `SET_MODE` (11). It
+sets LAND even when disarmed, which was requested explicitly. Derived from
+`land_ardupilot_landmode.py`, which is untouched and still points at the
+non-existent `/dev/serial0`.
+
+Port 5678 accepts multiple simultaneous clients, so these scripts and Mission
+Planner can be connected at the same time. mavlink-router handles the fan-out.
+
+### Untested
+
+Neither `dronefly.py` nor `land_now.py` has been run against a live flight
+controller. Everything verified this session was wording, arithmetic and
+imports. The parts that can only fail in flight are the `DO_SET_MODE` ACK
+path, whether `BATTERY_STATUS` arrives on this link at all, and whether the
+`.BIN` stamp lands on the same timeline as the mode change. One cage flight on
+a part-used pack would exercise both branches of the LLM decision.
 
 ---
 
