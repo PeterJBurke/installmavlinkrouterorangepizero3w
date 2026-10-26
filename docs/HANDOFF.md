@@ -1,6 +1,6 @@
 # Handoff — state of play
 
-Last updated: 2026-10-19. Written so a fresh session (or a future you) can pick up
+Last updated: 2026-10-26. Written so a fresh session (or a future you) can pick up
 without re-deriving anything.
 
 ---
@@ -242,6 +242,30 @@ on the real FC. Props never spun; the aircraft was disarmed throughout.
 
 Still unverified: whether the `.BIN` statustext stamp lands on the same
 timeline as the mode change. That needs a log pull after a LAND run.
+
+**And the stamp may be days wrong, which is new (2026-10-26).** This board has
+no RTC — `timedatectl` says `RTC time: n/a`, there is no `/dev/rtc`, and time is
+carried over reboots by `fake-hwclock`. On the boot observed on 26 Oct, chrony
+found the clock **577,828 s wrong (6.7 days)** and stepped it only after the
+network came up:
+
+```
+Oct 19 23:16:34 chronyd: System clock wrong by 577828.702179 seconds
+Oct 26 15:47:03 chronyd: System clock was stepped by 577828.702179 seconds
+```
+
+`dronefly.py` stamps `datetime.now()` into the FC log via `statustext_send`, and
+into its own log line, precisely so the LLM decision can be lined up against the
+mode change afterwards. **In the drone cage there is no internet**, so NTP never
+runs, and that stamp can carry the date of whenever the Pi last had a network —
+days off. The relative ordering within one run is fine; the absolute date is not
+trustworthy.
+
+Fix, when someone wants it: take time from the flight controller instead of the
+Pi. The FC has GPS and sends `SYSTEM_TIME` (msgid 2, `time_unix_usec`), which is
+correct whenever there is a 3D fix — and GPS was at 29 satellites. Reading that
+and stamping it, or at least logging both and the offset between them, removes
+the dependency on the Pi's clock entirely. Not done.
 
 ---
 
