@@ -40,20 +40,22 @@ silently does nothing useful. See [Why this is not just the Pi script](#why-this
    │  3  ● ●  4                   │
    │  5  ● ●  6                   │
    │  7  ● ●  8                   │
-   │  9  ● ● 10                   │
+   │  9  ● ● 10   GND ────────────┼────────► GND
    │ 11  ● ● 12   UART2-TX ───────┼────────► RX
    │ 13  ● ● 14   UART2-RX ◄──────┼───────── TX
-   │              GND (pin 14) ───┼────────► GND
    └──────────────────────────────┘
+
+   Pins 9, 11 and 13 are three in a row down the SAME (odd) column,
+   so all three jumpers sit side by side with nothing to count across.
 ```
 
 | Header pin | Signal | Connect to |
 |---:|---|---|
+| **9** | `GND` | flight controller **GND** |
 | **11** | `UART2-TX` (PB0) | flight controller **RX** |
 | **13** | `UART2-RX` (PB1) | flight controller **TX** |
-| **14** | `GND` | flight controller **GND** |
 
-(Pin 6, 9, 20, 25, 30, 34 or 39 work equally well for GND.)
+(Pin 6, 14, 20, 25, 30, 34 or 39 work equally well for GND.)
 
 > ⚠️ **TX goes to RX and RX goes to TX.** Straight-through TX→TX is the single
 > most common reason nothing appears.
