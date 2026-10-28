@@ -1,7 +1,45 @@
 # Handoff — state of play
 
-Last updated: 2026-10-26. Written so a fresh session (or a future you) can pick up
+Last updated: 2026-10-28. Written so a fresh session (or a future you) can pick up
 without re-deriving anything.
+
+---
+
+## Session end — 2026-10-28 — docs only
+
+### GND moved to pin 9 in the README wiring diagram
+
+User's request: *"i want the ground to be pin 9 not 14 since it is easier."*
+Correct, and for a specific reason — pins **9, 11, 13** are three consecutive
+positions down the *same* odd column, so all three jumpers sit side by side
+with nothing to count across the header. Pin 14 is in the even column opposite
+pin 13, which is the arrangement that caused the original pin-finding
+confusion back in September.
+
+```
+   │  9  ● ● 10   GND ────────────┼────────► GND
+   │ 11  ● ● 12   UART2-TX ───────┼────────► RX
+   │ 13  ● ● 14   UART2-RX ◄──────┼───────── TX
+```
+
+Electrically identical — both are header grounds. Nothing in `test_serial.sh`
+or the troubleshooting tables needed changing; they only ever say "shared GND"
+without naming a pin. The wiring table in this file was corrected to match, and
+pin 14 moved into the alternative-grounds list (6, 14, 20, 25, 30, 34, 39).
+
+Commit `278a37c`.
+
+### Still no pinout image
+
+Asked and answered this session: there is **no** `.png`/`.svg`/`.jpg` anywhere
+in either repo or the home directory. The only wiring graphic is the ASCII
+diagram in `README.md`.
+
+Its weakness is unchanged: it shows the logical numbering but not how to find
+pin 1 on the physical board, which is the part that actually cost time. The
+board-orientation reasoning and the probe-pin-12-for-3.3 V trick live further
+down in this file but never made it into the README. An offer to draw a proper
+image was made and not taken up — still open if wanted.
 
 ---
 
@@ -455,9 +493,12 @@ Power **both** devices off. Then three wires:
 
 | Pi header pin | Which one physically | → | Flight controller |
 |---:|---|---|---|
-| **11** | 6th down the **odd** (left) row | → | **RX** |
+| **9** | 5th down the **odd** (left) row | — | **GND** |
+| **11** | 6th down the odd row | → | **RX** |
 | **13** | 7th down the odd row | ← | **TX** |
-| **14** | directly opposite pin 13 | — | **GND** |
+
+(GND moved from pin 14 to pin 9 on 2026-10-28 — see the note at the top of
+this file. Pin 14 still works; it is just in the other column.)
 
 **Do not connect 5 V.** Separate supplies, shared ground only. GPIO is 3.3 V.
 
