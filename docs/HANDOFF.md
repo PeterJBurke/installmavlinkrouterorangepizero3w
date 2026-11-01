@@ -1,6 +1,6 @@
 # Handoff — state of play
 
-Last updated: 2026-10-28. Written so a fresh session (or a future you) can pick up
+Last updated: 2026-11-01. Written so a fresh session (or a future you) can pick up
 without re-deriving anything.
 
 ---
@@ -431,6 +431,30 @@ claude --continue      # resumes the most recent conversation for this directory
 ```
 
 If that fails, this file plus `BUILD_JOURNAL.md` contain everything needed.
+
+### Status line shows context usage (added 2026-11-01)
+
+`~/.claude/statusline.sh`, wired up via `statusLine` in `~/.claude/settings.json`.
+Prints model, a 10-cell bar, percent and tokens — green under 50%, yellow to
+79%, red above:
+
+```
+Opus 5 (1M context)  [..........] 9.6%   95k/1.0M
+Sonnet 5             [########..] 86.0%  172k/200k
+```
+
+Field names came from the documented schema inside the installed binary
+(v2.1.316), not guesswork: `.context_window.total_input_tokens`,
+`.context_window_size`, `.used_percentage`.
+
+**The trap:** `used_percentage` is `null` until the session's first API
+response, so a naive script prints nothing or `null%` on the first prompt every
+time. The script computes the percentage itself in that case.
+
+A new `statusLine` key needs a Claude Code restart to take effect — the
+settings watcher only watches directories that already had a settings file when
+the session started. `/context` is the built-in alternative and gives a fuller
+breakdown; the status line's advantage is being always visible.
 
 ---
 
