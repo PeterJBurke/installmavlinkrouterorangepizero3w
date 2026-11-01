@@ -10,6 +10,16 @@ without re-deriving anything.
 Student tutorial for streaming the drone's USB camera to Windows/Linux laptops
 and into Mission Planner. Flight controller unpowered throughout.
 
+### Where it stopped (late 2026-11-01)
+
+User asked for the Tailscale stream URL (`http://100.92.72.14:8080/`, raw
+`/stream`) — **still untested from a laptop**, which is the only place it can be
+tested. Then asked whether `land_now.py` was ready: the script is unchanged
+since it worked on 19 Oct, mavlink-router is active, but **no heartbeat on
+:5678** — the flight controller was still unpowered. Next action when the FC is
+on: confirm a heartbeat, then
+`~/ardupilot_land/venv/bin/python ~/autoland/land_now.py`.
+
 ### Final state
 
 | item | state |
