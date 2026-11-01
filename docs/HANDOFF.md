@@ -148,6 +148,20 @@ Fallback that is known-good with MP's *default* pipeline: `mode.sh h264` (RTP
 push to UDP 5600) — but `h264.env` DEST_IP still points at the Surface; change to
 100.123.80.42 if ever used. User prefers pull.
 
+### Decision: camera modes stay EXCLUSIVE (user, 2026-11-01)
+
+Only one of `camstream` (MJPEG page :8080), `camstream-h264` (push :5600),
+`camstream-rtsp` (pull :8554) runs at a time, enforced by `Conflicts=`. The
+user considered and **declined** running the MJPEG overlay page alongside RTSP.
+Reasons recorded so nobody rebuilds it: MJPEG is 15 Mbit/s (LAN-only, useless
+on cellular); splitting one camera needs `v4l2loopback` built against the vendor
+`6.6.98-sun60iw2` kernel (headers uncertain, a bad module can take the camera
+down at boot); extra encode + a frame of latency; and the overlay would then
+measure a loopback copy, not what Mission Planner receives. If a browser view
+during demos is ever wanted, the right path is mediamtx WebRTC of the same
+H.264 stream with the overlay rewritten to read WebRTC stats — new work, not a
+toggle.
+
 ### Files added/changed tonight
 
 ```
