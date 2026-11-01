@@ -1,7 +1,165 @@
 # Handoff — state of play
 
-Last updated: 2026-11-01 (late). Written so a fresh session (or a future you) can pick up
+Last updated: 2026-11-01 (very late). Written so a fresh session (or a future you) can pick up
 without re-deriving anything.
+
+---
+
+## Session — 2026-11-01, late evening — UDP telemetry live, RTSP video, tailnet bug confirmed, Thursday audit
+
+Long session. Everything below is the delta on top of the earlier 2026-11-01
+sections. Mission Planner laptop is **`win11rogasus` (100.123.80.42)** — NOT the
+Surface (100.109.85.83) I had assumed all evening; the Surface is offline.
+
+### State when stopped
+
+| item | state |
+|---|---|
+| Tailscale | **1.104.4** (upgraded from 1.102.4; the restart dropped the SSH session, as expected). Health OK |
+| `tcp_retries2` | **= 8, applied and persistent** (`/etc/sysctl.d/90-tcp-retries.conf`, user ran it) |
+| mavlink-router | TCP :5678 **and** `[UdpEndpoint gcs] Mode=Server :14550` (pull). Full file in `~/inbox/main.conf`, installed by the user |
+| Mission Planner telemetry | **connected via UDPCl → 100.92.72.14:14550, healthy**: ~77 pkt/s each way, flat for 2 min, 0 drops, 0 router errors. Path relayed via DERP lax, 14 ms |
+| Camera | **`camstream-rtsp` is the boot default**: mediamtx + ffmpeg, H.264 640x480@30 ~600 kbit/s, pull from `rtsp://100.92.72.14:8554/cam`. Three modes via `~/camstream/mode.sh mjpeg|h264|rtsp|status` (mutual `Conflicts=`) |
+| Video in VLC | **works** (1 s lag = VLC's default 1000 ms network cache; `--network-caching=200`) |
+| Video in Mission Planner | **corrupted (grey/green bands) as of last report**; two fixes applied/handed over, NOT yet confirmed — see below |
+| `netaudit.service` | running, logs to `~/netaudit/journal.log` + 30 s `health.csv`, now tracking the right laptop |
+| Baud | still 57600 both ends, **on the back burner**; see the UART finding — do NOT pick 460800 or 921600 |
+
+### Tailnet "disconnected" — CONFIRMED a Tailscale bug, with fixes pending upstream
+
+User pushed back ("tailscale should dynamically reconfigure… ZeroTier didn't do
+this") and was right to. Research found the exact mechanism acknowledged:
+
+* [PR #21834 — drop Noise client when map watchdog fires](https://github.com/tailscale/tailscale/pull/21834):
+  *upstream NAT change blackholes the control TCP connection; the map watchdog
+  fires but the ts2021 transport keeps reusing the dead connection.* That is our
+  20:34–20:50 log line for line.
+* [PR #20618 — reset control transport on new STUN IP](https://github.com/tailscale/tailscale/pull/20618):
+  WAN changed, local interface did not.
+* Underlying issue #12021, open since 2024. Both PRs were still open as of
+  mid-Oct 2026; **not in 1.104.4**. Estimate: 1–3 months if merged soon;
+  realistically longer. **Do not plan around it.**
+* Why ZeroTier never showed it: its control traffic is UDP to root servers — no
+  long-lived TCP session to strand. Tailscale's data plane is also UDP (SSH
+  survived the whole stall); only its control channel is TCP.
+* Why exactly ~15 min: tailscaled kept *sending* on the dead socket, so TCP's
+  retransmission budget (`tcp_retries2=15`) governed, not keepalive (keepalive
+  only runs when idle). `tcp_retries2=8` → ~100 s. Applied.
+* Cell-tower handoff keeps the phone's IP → does NOT trigger this. Wi-Fi↔cellular
+  flips on the phone do.
+
+Correction recorded: the control-plane stall explains the admin-console
+"disconnected", **not** the MP drops during that window — peer pings were 0%
+loss then. MP drops over TCP had their own cause (jitter + TCP); UDP is the
+mitigation and is now in place.
+
+### Thursday 2026-10-29 demo disconnects — what could and could not be audited
+
+* **No Pi logs survive**: journald is `Storage=volatile` (wiped at reboot);
+  `/var/log/syslog` exists but is root-only. User can recover with:
+  `sudo zcat -f /var/log/syslog* | grep "^2026-10-29" | grep -iE "tailscaled|NetworkManager|wpa_supplicant" > ~/inbox/thursday.log`
+  Also: Tailscale admin console machine page keeps "last seen" history.
+* **Most likely chain**: phone Wi-Fi was on with campus networks saved; walking
+  away from the lecture hall the phone joined/left eduroam/UCI Wi-Fi at coverage
+  edges → each crossing flipped the hotspot's upstream → (a) Tailscale control
+  stranded 15 min, or (b) One UI 6.1/7 drops the hotspot outright when the
+  phone's Wi-Fi connects (community reports). Both fit "twice, both when carried
+  far away".
+* **Demo rules derived**: phone Wi-Fi OFF for the whole demo (removes the
+  trigger; also kills Samsung Auto Hotspot behaviour); `tcp_retries2=8` (done);
+  UDP telemetry (done); RTSP video. `netaudit` makes the next incident
+  auditable to the half-minute.
+* Phone setting (One UI): Settings → Connections → Mobile Hotspot and
+  Tethering → Mobile Hotspot → Configure → **Wi-Fi sharing off**. Verified
+  working tonight via public IP changing from googlefiber.net to AT&T.
+
+### UART baud — IMPORTANT finding, corrects earlier advice
+
+The class param file (`~/inbox/Params08Aug2026_CRSF.param`) sets
+`SERIAL2_BAUD = 460` (460800). **That rate cannot be generated by this Pi.**
+`/dev/ttyS2` has a 24 MHz clock, 16x sampling, integer divisor → only
+1,500,000 / N:
+
+| requested | actual | error | |
+|---|---|---|---|
+| 57600 | 57692 | +0.2% | OK (current) |
+| 115200 | 115385 | +0.2% | OK |
+| 230400 | 214286 | −7.0% | bad |
+| **460800** | 500000 | **+8.5%** | **bad — almost certainly why September's 460800 attempt failed** |
+| **500000** | 500000 | 0.0% | **OK, exact — the recommended fast rate (ArduPilot code 500)** |
+| 921600 | 750000 | −18.6% | bad — I had recommended this earlier; retracted |
+| 1500000 | 1500000 | 0.0% | OK but FIFO-overrun risk under load |
+
+Suggest the Canvas instructions change 460 → 500 for Orange Pi students. The
+commented-out `Baud = 500000` line is in `~/inbox/main.conf` with this note.
+
+Live FC also deviates from the class file: `SERIAL6_PROTOCOL` 2 (file: 23 CRSF
+RC), `RSSI_TYPE` 5 (file: 3). RC works, so input comes from elsewhere. Full
+param diff offered, not run.
+
+### RTSP video in Mission Planner — corruption, diagnosis, two fixes
+
+Symptom: HUD shows the picture under horizontal grey/green bands; VLC clean.
+MP's GStreamer log: `<avdec_h264-1> decreasing timestamp (0:00:57 < 0:03:20)`,
+repeating. Server verified clean: ffmpeg decoded the live stream with 0
+complaints; GStreamer on the Pi decoded 600 frames with 0 warnings; encoder
+never restarted.
+
+Mechanism (GStreamer Discourse): rtspsrc rebases timestamps when **RTCP sender
+reports** arrive; MP's bundled GStreamer handles the rebase badly, VLC ignores
+RTCP timing. Fixes:
+1. **Server (applied)**: ffmpeg `-use_wallclock_as_timestamps 1 -fps_mode cfr -r 30`
+   so RTP and NTP agree. Verified: 240 frames at exactly 33.3 ms, 0 backward.
+2. **MP pipeline (handed over, unconfirmed)**:
+   `rtspsrc location=rtsp://100.92.72.14:8554/cam latency=200 protocols=tcp do-rtcp=false buffer-mode=none ! rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! video/x-raw,format=BGRA ! appsink name=outsink sync=false`
+   (`latency=0` in my first pipeline was also wrong — jitter buffer drops late
+   packets → slice loss.) Restart MP before setting it; MP may keep an old
+   pipeline alive (`-1` decoder instance). If still corrupt: try `decodebin` in
+   place of depay/parse/decoder; the remaining suspect is MP's GStreamer version.
+
+Fallback that is known-good with MP's *default* pipeline: `mode.sh h264` (RTP
+push to UDP 5600) — but `h264.env` DEST_IP still points at the Surface; change to
+100.123.80.42 if ever used. User prefers pull.
+
+### Files added/changed tonight
+
+```
+/etc/sysctl.d/90-tcp-retries.conf          (user installed; copy in ~/netaudit/)
+/etc/mavlink-router/main.conf              (user installed from ~/inbox/main.conf; +UdpEndpoint gcs Server :14550)
+~/camstream/mediamtx, mediamtx.yml         RTSP server; runOnInit ffmpeg; moq/hls/webrtc/api off
+~/camstream/camstream-rtsp.service         linked + enabled (boot default)
+~/camstream/camstream.service, -h264       re-linked (systemctl disable on a linked unit DELETES the link — had to re-link)
+~/camstream/mode.sh                        mjpeg|h264|rtsp|status
+~/netaudit/netaudit.service, sampler.sh    persistent logging; LAPTOP=100.123.80.42
+~/inbox/Params08Aug2026_CRSF.param         class FC config (from Canvas)
+~/inbox/Screenshot 2026-11-01 14{56,59}*.png   MP corruption evidence
+```
+
+### Gotchas tonight
+
+* `systemctl disable` on a `systemctl link`ed unit removes the link → unit
+  "not-found". Re-`link` afterwards.
+* Inbound connections via userspace-mode Tailscale show as **127.0.0.1** on the
+  Pi (netstack), so `ss` cannot show the real client — use mediamtx's log.
+* `tailscale ping` exits at the first direct pong; `--until-direct=false` for
+  sustained samples. MagicDNS does not resolve via the hotspot's DNS.
+* Tailscale control uses **port 80** (ts2021) first, 443 fallback.
+* Carrier CGNAT (AT&T tethering) drops idle IPv4 TCP at ~60–75 s; 15 s TCP
+  keepalives hold it; IPv6 (no NAT) survives ≥240 s. **Do not disable IPv6 on
+  the Pi** — it is the healthier path on cellular. Students' IPv6 grief is
+  half-configured networks elsewhere.
+* The upgrade/restart of tailscaled kills a Claude session running over the
+  tailnet — do it last, or from the LAN.
+
+### Next actions
+
+1. User: confirm MP video with the `do-rtcp=false buffer-mode=none` pipeline after an MP restart.
+2. Rehearse the bug fix: Pi on hotspot, phone Wi-Fi ON at a known time; expect
+   control recovery ≈100 s (was 16 min). `netaudit` records it.
+3. Recover Thursday's syslog with the sudo one-liner; I analyse.
+4. Optional: full FC param diff vs the class file; Canvas baud note 460→500.
+5. Tutorial docx does not yet mention UDPCl telemetry, RTSP video, or the baud
+   finding — update when the MP pipeline is confirmed.
 
 ---
 
