@@ -432,6 +432,22 @@ claude --continue      # resumes the most recent conversation for this directory
 
 If that fails, this file plus `BUILD_JOURNAL.md` contain everything needed.
 
+> **`--continue` restores the model the conversation was CREATED with, not your
+> default.** This is by design — resuming would otherwise switch models
+> mid-thread — but it looks like the default setting is broken. Observed
+> 2026-11-01: `~/.claude/settings.json` had `"model": "fable"` and a brand-new
+> session did start on `claude-fable-5-1`, while `--continue` on the long
+> September session kept coming back as `claude-opus-5`, twice.
+>
+> `/model fable` after resuming switches that conversation from there on, but
+> does not persist into the *next* resume of the same session. For a fresh
+> session on the default model, run plain `claude` with no flags.
+>
+> Before hunting a config bug, note what was already ruled out: no project or
+> local `.claude/settings.json` setting a model, no managed settings in
+> `/etc/claude-code/`, no `ANTHROPIC_MODEL` in the environment, and `claude` is
+> a plain symlink to the binary with no wrapper adding `--model`.
+
 ### Status line shows context usage (added 2026-11-01)
 
 `~/.claude/statusline.sh`, wired up via `statusLine` in `~/.claude/settings.json`.
