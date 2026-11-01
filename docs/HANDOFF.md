@@ -426,27 +426,26 @@ cycles:
 
 ```bash
 cd ~/mlinstall/installmavlinkrouterorangepizero3w
-claude --continue      # resumes the most recent conversation for this directory
-# or: claude --resume   to pick from a list
+claude --continue --model fable   # resume the most recent conversation, on Fable
+# or: claude --resume --model fable   to pick from a list
 ```
 
 If that fails, this file plus `BUILD_JOURNAL.md` contain everything needed.
 
-> **`--continue` restores the model the conversation was CREATED with, not your
-> default.** This is by design — resuming would otherwise switch models
-> mid-thread — but it looks like the default setting is broken. Observed
-> 2026-11-01: `~/.claude/settings.json` had `"model": "fable"` and a brand-new
-> session did start on `claude-fable-5-1`, while `--continue` on the long
-> September session kept coming back as `claude-opus-5`, twice.
+> **Why `--model fable` is on the command.** `--continue` picks the model from
+> the **last assistant turn in the transcript**, not from your default in
+> `~/.claude/settings.json`. The September session had only ever run on Opus,
+> and each `/model fable` was followed by an immediate `/exit` with no turn in
+> between — so the transcript still ended on Opus and every resume brought Opus
+> back. Three times (2026-11-01). The explicit flag makes the resumed model
+> independent of transcript history. A brand-new `claude` with no flags was on
+> Fable all along, so the default itself is fine.
 >
-> `/model fable` after resuming switches that conversation from there on, but
-> does not persist into the *next* resume of the same session. For a fresh
-> session on the default model, run plain `claude` with no flags.
->
-> Before hunting a config bug, note what was already ruled out: no project or
-> local `.claude/settings.json` setting a model, no managed settings in
-> `/etc/claude-code/`, no `ANTHROPIC_MODEL` in the environment, and `claude` is
-> a plain symlink to the binary with no wrapper adding `--model`.
+> Already ruled out, so nobody re-checks: no project or local
+> `.claude/settings.json` setting a model, no managed settings in
+> `/etc/claude-code/`, no `ANTHROPIC_MODEL` in the environment, no per-session
+> model stored in `~/.claude.json`, and `claude` is a plain symlink to the
+> binary with no wrapper.
 
 ### Status line shows context usage (added 2026-11-01)
 
