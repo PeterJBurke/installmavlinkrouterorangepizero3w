@@ -1,7 +1,134 @@
 # Handoff — state of play
 
-Last updated: 2026-11-01 (night). Written so a fresh session (or a future you) can pick up
+Last updated: 2026-11-01 (late). Written so a fresh session (or a future you) can pick up
 without re-deriving anything.
+
+---
+
+## Session — 2026-11-01 late — tailnet stability audit + two-network demo path
+
+Started as "Mission Planner is unstable", became a network audit. Two distinct
+problems were found and both are explained with evidence below. Also built the
+H.264 push path for the planned in-class demo (drone in cage, laptop in lecture
+hall, no shared network).
+
+### State when stopped
+
+| item | state |
+|---|---|
+| Pi network | phone hotspot `Burkephone` (2.4 GHz, 10.204.231.25), phone Wi-Fi OFF → upstream is **cellular** (AT&T, public 70.243.190.71) |
+| Tailscale | healthy since 20:50; control connection over IPv6; direct (no relay) to the laptop |
+| Camera | **`camstream-h264` mode active**: ffmpeg H.264 RTP push → laptop `100.109.85.83:5600`, ~0.7 Mbit/s, 63% of one core. MJPEG page is OFF (modes are exclusive) |
+| Mission Planner | NOT yet tested with either the H.264 video or UDP telemetry |
+| Telemetry | still TCP :5678 only; UDP endpoint lines handed to the user, not yet added to `/etc/mavlink-router/main.conf` (needs their sudo) |
+| sysctl fix | recommended, NOT applied (needs sudo): `net.ipv4.tcp_retries2 = 8` |
+
+Laptop: `win11surfacepro` / `DESKTOP-352M4P7`, Tailscale `100.109.85.83`, home LAN `192.168.1.193`.
+Phone: Galaxy S24 Ultra, Tailscale `100.96.100.123`.
+
+### Problem 1 — "Orange Pi disconnected from tailnet" (the one the user has "often")
+
+**Cause: when the phone's upstream changes, TCP flows through the phone's NAT
+die silently, and tailscaled kept using its dead control connection until Linux
+TCP gave up — 16 minutes.** The Pi's hotspot IP does not change, so nothing
+looked wrong locally.
+
+```
+20:34:11  LinkChange: major, rebinding        (phone Wi-Fi turned off → cellular)
+20:34:14  magicsock DERP re-homed             (UDP data plane rebound fine)
+20:35:24  control: map response long-poll timed out!   … every 2 min, 15 times
+20:43:36  health: Unable to connect to the coordination server
+20:50:07  read tcp 10.204.231.25:37318->192.200.0.107:80: error   (TCP gave up)
+20:50:08  controlhttp: forcing port 443 dial  → re-dialed over IPv6
+20:50:09  health: ok                           (stable since)
+```
+
+`tcp_retries2 = 15` (default) ≈ 13–30 min to error a black-holed connection; the
+16 min matches. Data plane (WireGuard/UDP) kept working throughout — which is
+why SSH over the tailnet survived while the admin console showed "disconnected".
+Peer reachability degrades over time in that state → Mission Planner drops.
+
+Is it a Tailscale bug? A robustness gap: it detected a *major* link change and
+rebound UDP but did not re-dial control. tailscale 1.102.4. Not checked upstream
+(no web access from the Pi). Worth reporting with the log above.
+
+**Fixes, ranked:**
+1. `/etc/sysctl.d/90-tcp-retries.conf`: `net.ipv4.tcp_retries2 = 8` (dead
+   connections error in ~100 s) then `sudo sysctl --system`. Helps tailscaled,
+   mavlink-router clients, SSH. **Not applied — needs sudo.**
+2. Do not flip the phone's upstream while the drone is connected: Wi-Fi sharing
+   off (or phone Wi-Fi off) *before* the drone joins. Or a travel router.
+3. Manual recovery: `sudo systemctl restart tailscaled` (seconds instead of 16
+   min). I have NOPASSWD for systemctl but did not run it — it drops the tailnet
+   briefly.
+
+### Problem 2 — Mission Planner drops while the phone shared home Wi-Fi
+
+Different mechanism, earlier in the evening: the phone's single Wi-Fi radio was
+client of the home router AND access point for the Pi. Measured Pi→laptop
+through it: median 15 ms, **p90 78, max 119**, zero loss. TCP MAVLink stalls on
+that jitter; MP sessions lasted 3m48s and 37s. Went away when the hotspot moved
+to cellular (median 39, p90 88, max 133 but no radio time-slicing bursts).
+
+### What was ruled out (all measured)
+
+Wi-Fi link (no disconnects, stable DHCP), DNS (15/15, 7 ms), path MTU (~1428
+both families, PMTUD works), large transfers (1 MB fine on v4 and v6), cellular
+latency (p90 48 ms), video push contention (median 48 vs 42 ms on/off), FC
+serial (no errors), mavlink-router (clean). Carrier NAT drops idle IPv4 TCP at
+~60–75 s, but 15 s TCP keepalives hold it (tested) and IPv6 has no NAT (240 s
+idle survived).
+
+### IPv6 — user asked whether to disable it everywhere
+
+**Advised against on the Pi.** On this hotspot IPv6 is the healthier path (no
+CGNAT; the stable control connection is IPv6). Students' IPv6 trouble is almost
+certainly half-configured networks elsewhere; disable it *there* if needed.
+
+### Two-network demo architecture (built, partly tested)
+
+| | before | demo |
+|---|---|---|
+| addressing | LAN IP | Tailscale (relay 19 ms to LA if ever needed) |
+| telemetry | MP pulls TCP :5678 | **mavlink-router pushes UDP → laptop :14550** (not yet configured) |
+| video | MJPEG pull, 15 Mbit/s | **ffmpeg H.264 RTP push → laptop :5600, ~0.7 Mbit/s** (running) |
+
+Encode cost measured: 640x480@30 600 kbit/s = 56–63% of one core; @15 fps
+400 kbit/s = 30%. The RTP format was validated on the Pi against Mission
+Planner's **default** pipeline (`udpsrc port=5600 ! application/x-rtp !
+rtph264depay ! avdec_h264 …`): 90 frames decoded. Cellular data: ~330 MB/h.
+
+Files in `~/camstream/`: `camstream-h264.service` (linked), `h264.env`
+(DEST_IP/PORT/RES/FPS/BITRATE), `mode.sh mjpeg|h264|status`. The two camera
+services carry mutual `Conflicts=`; only one can hold the camera.
+
+Telemetry lines for the user to add (then `sudo systemctl restart mavlink-router`,
+MP → UDP 14550):
+```
+[UdpEndpoint laptop]
+Mode = Normal
+Address = 100.109.85.83
+Port = 14550
+```
+MP video: Flight Data → right-click HUD → Video → Set GStreamer Source →
+`udpsrc port=5600 buffer-size=60000 ! application/x-rtp ! rtph264depay ! avdec_h264 ! videoconvert ! video/x-raw,format=BGRA ! appsink name=outsink sync=false`.
+Windows Firewall must allow MP inbound UDP (5600, 14550).
+
+### Phone setting (done by user: Wi-Fi off; the lasting version)
+
+Galaxy S24 Ultra: Settings → Connections → Mobile Hotspot and Tethering →
+Mobile Hotspot → Configure → **Wi-Fi sharing off**. Verified from the Pi: public
+IP left `googlefiber.net`, home LAN unreachable, path to laptop direct.
+
+### Small things learned
+
+* `gstreamer1.0-libav` was installed for local validation (avdec_h264).
+* `tailscale ping` stops at the first direct pong; use `--until-direct=false`
+  for a sustained sample. MagicDNS names do not resolve through the hotspot's
+  DNS; ping by 100.x IP.
+* The journal is persistent (`/var/log/journal`) but only 2 boots deep here.
+* Tailscale control uses **port 80** (ts2021) first, 443 as fallback — filter on
+  both when looking for the socket.
 
 ---
 
