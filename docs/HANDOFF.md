@@ -1,6 +1,6 @@
 # Handoff — state of play
 
-Last updated: 2026-11-01 (very late). Written so a fresh session (or a future you) can pick up
+Last updated: 2026-11-01 (very late; video at 720p30, latency=100, 2.0 Mbit/s). Written so a fresh session (or a future you) can pick up
 without re-deriving anything.
 
 ---
@@ -113,9 +113,16 @@ one-line file to copy from Notepad. All three are kept.
 commented in `mediamtx.yml`. Measured on air ≈ 1.7 Mbit/s incl. telemetry ⇒
 ~770 MB/h on cellular; drop to 640x480@30 (~330 MB/h) if data matters.
 
-**Latency knob**: `latency=200` in the MP pipeline is the jitter buffer; user
-may try 100 then 50. With `buffer-mode=none` it is the only deliberate delay
-left; the rest is encode (~2 frames with frame-threading) + 14 ms RTT.
+**Latency knob**: **`latency=100` confirmed working** by the user at 720p30
+(was 200). It is the jitter buffer; with `buffer-mode=none` it is the only
+deliberate delay left; the rest is encode (~2 frames with frame-threading) +
+14 ms RTT. 50 untried. `~/inbox/mp_pipeline.txt` still says 200 — edit to 100.
+
+**Bandwidth measured at 720p30, MP connected, 30 s flat**: **~2.0 Mbit/s out**
+(1.5 video + ~0.15 telemetry + ~0.3 RTP/TCP/WireGuard encapsulation — I had
+under-counted encapsulation at 1.7), 0.2 in. **≈ 900 MB/h on cellular.**
+800x600 ≈ 1.4 Mbit/s (~630 MB/h); 640x480 ≈ 0.9 (~400 MB/h). Encoder 112% of
+one core, load 1.8/8 — the uplink, not the Pi, is the limit.
 
 Original diagnosis notes follow.
 
