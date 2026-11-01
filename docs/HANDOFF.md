@@ -21,7 +21,7 @@ Surface (100.109.85.83) I had assumed all evening; the Surface is offline.
 | Mission Planner telemetry | **connected via UDPCl → 100.92.72.14:14550, healthy**: ~77 pkt/s each way, flat for 2 min, 0 drops, 0 router errors. Path relayed via DERP lax, 14 ms |
 | Camera | **`camstream-rtsp` is the boot default**: mediamtx + ffmpeg, H.264 640x480@30 ~600 kbit/s, pull from `rtsp://100.92.72.14:8554/cam`. Three modes via `~/camstream/mode.sh mjpeg|h264|rtsp|status` (mutual `Conflicts=`) |
 | Video in VLC | **works** (1 s lag = VLC's default 1000 ms network cache; `--network-caching=200`) |
-| Video in Mission Planner | **corrupted (grey/green bands) as of last report**; two fixes applied/handed over, NOT yet confirmed — see below |
+| Video in Mission Planner | **WORKING** (confirmed ~23:30). Final pipeline in `~/inbox/mp_pipeline.txt`; see the RTSP section for what changed |
 | `netaudit.service` | running, logs to `~/netaudit/journal.log` + 30 s `health.csv`, now tracking the right laptop |
 | Baud | still 57600 both ends, **on the back burner**; see the UART finding — do NOT pick 460800 or 921600 |
 
@@ -97,7 +97,27 @@ Live FC also deviates from the class file: `SERIAL6_PROTOCOL` 2 (file: 23 CRSF
 RC), `RSSI_TYPE` 5 (file: 3). RC works, so input comes from elsewhere. Full
 param diff offered, not run.
 
-### RTSP video in Mission Planner — corruption, diagnosis, two fixes
+### RTSP video in Mission Planner — corruption, diagnosis, RESOLVED
+
+**Outcome: working.** Three changes landed between broken and working, and I
+cannot say which one did it: (1) encoder switched to one slice per frame
+(`sliced-threads=0:threads=N:aud=1` — zerolatency had been cutting each frame
+into ~8 slices, and missing slices look exactly like the bands seen);
+(2) RTCP-free MP pipeline (`do-rtcp=false buffer-mode=none`); (3) the user had
+mistyped the pipeline on the previous attempt — a wrapped paste into MP's
+single-line box is a real failure mode, hence `~/inbox/mp_pipeline.txt` as a
+one-line file to copy from Notepad. All three are kept.
+
+**Resolution raised to 1280x720@30, 1.5 Mbit/s** after benchmarking (720p30 =
+115% of one core; 800x600@30 = 67%; 720p15 = 63%). Presets with cost are
+commented in `mediamtx.yml`. Measured on air ≈ 1.7 Mbit/s incl. telemetry ⇒
+~770 MB/h on cellular; drop to 640x480@30 (~330 MB/h) if data matters.
+
+**Latency knob**: `latency=200` in the MP pipeline is the jitter buffer; user
+may try 100 then 50. With `buffer-mode=none` it is the only deliberate delay
+left; the rest is encode (~2 frames with frame-threading) + 14 ms RTT.
+
+Original diagnosis notes follow.
 
 Symptom: HUD shows the picture under horizontal grey/green bands; VLC clean.
 MP's GStreamer log: `<avdec_h264-1> decreasing timestamp (0:00:57 < 0:03:20)`,
