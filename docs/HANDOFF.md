@@ -1,51 +1,74 @@
 # Handoff — state of play
 
-Last updated: 2026-11-01 (evening). Written so a fresh session (or a future you) can pick up
+Last updated: 2026-11-01 (night). Written so a fresh session (or a future you) can pick up
 without re-deriving anything.
 
 ---
 
-## Session — 2026-11-01 evening — USB camera streaming (paused mid-test)
+## Session — 2026-11-01 — USB camera streaming: DONE, tutorial delivered
 
-New deliverable: a student tutorial for streaming the drone's USB camera to
-Windows/Linux laptops and into Mission Planner. Flight controller unpowered
-throughout; nothing here touches flight.
+Student tutorial for streaming the drone's USB camera to Windows/Linux laptops
+and into Mission Planner. Flight controller unpowered throughout.
 
-### State when paused
-
-**Paused because the user is restarting the network.** A lag test was in
-progress: the stream at 640x480 with `--tcp-nodelay` had just been applied and
-the user had not yet reported whether lag was reduced, or whether it was
-constant vs growing. **Resume there.**
+### Final state
 
 | item | state |
 |---|---|
-| Camera | Arducam B0630 "1080P Low Light", USB-C **data** port, `/dev/video0`. Works. |
-| Service | `camstream.service` active + enabled. ustreamer MJPEG passthrough, **640x480@30, `--tcp-nodelay`**, port 8080 |
-| Browser URL | `http://<pi>:8080/stream` — **not** `/`, which is a plain text index |
-| Verified from laptop | LAN `192.168.1.146:8080/stream` shows video (user confirmed, "ton of lag" at 720p) |
-| NOT verified | Tailscale `100.92.72.14:8080/stream` from a laptop (Pi cannot self-dial in userspace mode, so only a laptop can test) |
-| NOT verified | Mission Planner on the laptop |
-| Tutorial | `~/inbox/HelloWorldOrangePiUSBcamFall2026.docx` (copy in `~/camstream/`), built by `~/camstream/build_tutorial.py` from the course format template |
+| Camera | Arducam B0630 "1080P Low Light", USB-C **data** port. Works. |
+| Service | `camstream.service` active + enabled, survives reboot (1 start, 0 retries). ustreamer MJPEG passthrough, **640x480@30, `--tcp-nodelay`, `--static` overlay page**, port 8080 |
+| `http://<pi>:8080/` | overlay page: live video + browser-measured resolution / received fps / bitrate / latency |
+| `http://<pi>:8080/stream` | raw MJPEG, for Mission Planner and scripts |
+| Lag | **Fixed.** User: "fps is a solid 30 unflinching." Cause was bandwidth, see below |
+| Tutorial | `~/inbox/HelloWorldOrangePiUSBcamFall2026.{docx,pdf}` — 15 pages, copies in `~/camstream/` |
+| Overlay page | `~/camstream/www/index.html`, copy at `~/inbox/camera_overlay_index.html` |
+| NOT verified from a laptop | Tailscale URL `100.92.72.14:8080/stream`; Mission Planner (either route) |
 
-### Files
+Addresses: LAN `192.168.1.146`, Tailscale `100.92.72.14`, MagicDNS `orangepi`.
+The Pi cannot dial its own Tailscale IP (userspace mode), so only a laptop can
+test that URL.
+
+### Files in `~/camstream/`
 
 ```
-~/camstream/camstream.service      # linked into /etc/systemd/system via systemctl link
-~/camstream/build_tutorial.py      # python-docx; opens the template, empties it, writes new content in its styles
-~/camstream/logo_clean.png, frame_clean.png
-~/camstream/HelloWorldOrangePiUSBcamFall2026.docx
+camstream.service        linked into /etc/systemd/system (systemctl link)
+www/index.html           overlay page served by --static
+build_tutorial.py        python-docx: opens the course template, empties it, writes the tutorial in its styles
+logo_clean.png           UCI seal from the template
+camera_photo.png         Arducam render, datasheet cover, composited onto white (pdfimages colour + mask)
+board_topview.png        Orange Pi annotated top view, cropped from the vendor manual p.12
+frame_clean.png          real test frame from this camera
+HelloWorldOrangePiUSBcamFall2026.docx / .pdf
 ```
 
-Rebuild the doc after editing the script:
-`python3 ~/camstream/build_tutorial.py ~/inbox/HelloWorldOrangePiUSBcamFall2026.docx`
+Rebuild + PDF:
+```bash
+python3 ~/camstream/build_tutorial.py ~/inbox/HelloWorldOrangePiUSBcamFall2026.docx
+cd /tmp && cp ~/inbox/HelloWorldOrangePiUSBcamFall2026.docx . && soffice --headless --convert-to pdf HelloWorldOrangePiUSBcamFall2026.docx
+```
+LibreOffice (`libreoffice-writer`, `fonts-roboto`, `fonts-liberation`) was
+installed for this; Roboto Mono embeds, Arial maps to Liberation Sans.
 
-### Why MJPEG passthrough, and the bandwidth problem
+### Tutorial structure (user's decisions baked in)
 
-The camera emits JPEG natively, so ustreamer copies frames with no encoding:
-~2.4% of one core at any resolution. But this camera's internal JPEG quality is
-high and **cannot be changed** (no UVC compression control; ustreamer's
-`--quality` does not re-encode MJPEG). Measured, same lit indoor scene, 30 fps:
+Page 1 front matter in the template's format (Purpose / Safety / Code — **no
+Grading, no Canvas submission: "there is no assignment"**). Page 2 hardware
+pictures only; **directions start on page 3**. Then Prerequisites → Phase I
+verify camera → Phase II browser (Windows/Linux, Tailscale, ffplay/VLC optional)
+→ **Phase III start at boot (service + overlay page)** → **Phase IV Mission
+Planner** (user swapped III/IV) → Adjusting video quality → Troubleshooting →
+Appendix on its own page.
+
+Pagination rules in the generator, after the user asked for "no hanging chads":
+headings keep-with-next; code blocks kept whole and glued to the prose that
+explains them (a code line = every run mono, so inline code in prose does not
+count); tables unsplittable and glued to their intro; bullet lists whole; widow
+control. Forced page-break-per-Phase was tried and **rejected** — it produced a
+six-line page. Audit after each build: no page ends on a heading or a colon.
+
+### The lag, and the bandwidth numbers
+
+The camera's internal JPEG quality is high and **cannot be changed** (no UVC
+control; ustreamer `--quality` does not re-encode MJPEG). Measured, lit scene:
 
 | resolution | bitrate | KB/frame |
 |---|---|---|
@@ -53,55 +76,56 @@ high and **cannot be changed** (no UVC compression control; ustreamer's
 | 1280x720 | 35.9 Mbit/s | 149 |
 | 800x600 | 16.7 Mbit/s | 69 |
 | 640x480 | 15.3 Mbit/s | 63 |
-| 640x480 @15 fps | 12.1 Mbit/s | — |
+| 640x480 @15 | 12.1 Mbit/s | — |
 
-Earlier sizing used 24 KB/frame measured on a dark ceiling; a lit scene is 4-6x
-larger. Wi-Fi path is Pi → AP → laptop, so airtime is double the bitrate. The
-Pi's own link is fine (5 GHz, -58 dBm, 324 Mbit PHY, power save off) but ping to
-the gateway jitters (avg 15 ms, max 49 ms).
+720p was the original default and lagged badly on LAN; Wi-Fi path is Pi → AP →
+laptop so airtime is double. 640x480 + `--tcp-nodelay` + a network restart
+(gateway ping went 15/49 ms avg/max → 2/3.8 ms) fixed it. Pi-side cost is
+~2.4% of one core at any resolution. **Next lever if ever needed:** capture
+`--format=YUYV` and let ustreamer `--encoder=CPU --quality=50` make smaller
+JPEGs. Untried. H.264/RTSP via ffmpeg+mediamtx was attempted (404 from
+`rtspsrc` twice) and abandoned.
 
-**If lag persists at 640x480:** the next lever is re-encoding on the Pi so the
-quality can be lowered: capture `--format=YUYV` at 640x480 and let ustreamer
-`--encoder=CPU --quality=50` make the JPEGs (8 cores; expect tens of percent of
-one core). Not yet tried. H.264 via ffmpeg+mediamtx RTSP was attempted and
-abandoned — mediamtx accepted the publish but `rtspsrc` got 404 twice; not worth
-more time while MJPEG works.
+### Overlay page — how it works
 
-### Gotchas found (all in the tutorial's Troubleshooting)
+Fetches `/stream`, splits on each part's `Content-Length`, displays each JPEG via
+an object URL, counts frames/bytes per second. Latency = laptop clock − the
+Pi's `X-Timestamp` per frame (meaningful only with NTP on both ends; in the cage
+with no internet it shows clock skew — the page says so). Parsing validated by
+running the same algorithm in Python against 3 s of live stream: 89/89 frames at
+33.3 ms spacing. The camera appends 0–7 bytes of padding after each JPEG's EOI
+marker — harmless, but a strict "ends with FFD9" check fails on most frames.
+
+### Gotchas (all in the tutorial's Troubleshooting)
 
 * `lsusb` names this camera **"Microdia MaxTrack Wireless Mouse"** (0c45:0520).
-  Sonix UVC bridge; the usb.ids database is wrong. It is the camera.
-* `kill -9` on a process streaming from the camera **wedges the UVC device**:
-  `select() error: Inappropriate ioctl`, gray 640x480 "no signal". Only a
+  Sonix UVC bridge; usb.ids is wrong. It is the camera.
+* `kill -9` on a process streaming from the camera **wedges the UVC device**
+  (`select() error: Inappropriate ioctl`, gray 640x480 "no signal"). Only a
   physical replug fixes it; `USBDEVFS_RESET` needs root on `/dev/bus/usb`.
-  Stop with Ctrl+C or `systemctl stop`.
-* `After=dev-video0.device` in a unit **hangs `systemctl start` forever** on
-  this board: udev tags the node `uaccess:seat`, not `systemd`, so the device
-  unit is `inactive dead` and the job waits on it. Use `Restart=always` and let
-  the boot race resolve itself.
-* ustreamer `/` is an index page; the video is `/stream`
-  (`multipart/x-mixed-replace`).
-* `pkill -f mediamtx` from a script whose text contains "mediamtx" kills the
-  script itself (exit 144). Use `pkill -x <name>`.
-* A raw UVC JPEG has no JFIF marker; python-docx `add_picture` rejects it with
-  `UnrecognizedImageError`. Convert to PNG first.
+* `After=dev-video0.device` in a unit **hangs `systemctl start` forever** here:
+  udev tags the node `uaccess:seat`, not `systemd`, so the device unit is
+  `inactive dead`. `Restart=always` handles the boot race instead.
+* ustreamer `/` is a text index unless `--static` is given; video is `/stream`.
+* `pkill -f <word>` from a script containing that word kills the script (exit
+  144). Use `pkill -x`.
+* A raw UVC JPEG has no JFIF marker; python-docx `add_picture` rejects it
+  (`UnrecognizedImageError`). Convert to PNG.
+* The reboot wiped `/tmp`, taking the Claude scratchpad with it. Anything worth
+  keeping goes in `~/camstream/`.
 
-### Mission Planner
+### Mission Planner (untested on a laptop)
 
-Both routes are in the doc, untested on a laptop from here:
-A) `Video → Set MJPEG source` with `http://<pi>:8080/stream`;
-B) `Video → Set GStreamer Source` with
+A) `Video → Set MJPEG source` → `http://<pi>:8080/stream`.
+B) `Video → Set GStreamer Source` →
 `souphttpsrc location=http://<pi>:8080/stream ! multipartdemux ! jpegdec !
 videoconvert ! video/x-raw,format=BGRA ! appsink name=outsink sync=false`.
-Route B's pipeline was run on the Pi against the live stream with `fakesink` in
-place of `appsink`: 30 frames decoded, exit 0.
+B was run on the Pi against the live stream with `fakesink`: 30 frames, exit 0.
 
-### Root I have on this board
+### Root on this board
 
-`sudo -n` works only for `apt-get systemctl udevadm usermod reboot` and the two
-install scripts. That is why the unit lives in `~/camstream/` and is
-`systemctl link`ed rather than copied to `/etc`, and why the USB reset needed a
-human.
+`sudo -n` only for `apt-get systemctl udevadm usermod reboot` + the two install
+scripts. Hence `systemctl link` from `~/camstream/`, and the human replug.
 
 ---
 
