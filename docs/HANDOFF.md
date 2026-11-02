@@ -1,7 +1,125 @@
 # Handoff — state of play
 
-Last updated: 2026-11-01 (very late; video at 720p30, latency=100, 2.0 Mbit/s). Written so a fresh session (or a future you) can pick up
+Last updated: 2026-11-02 — **the next session starts with a fresh context window; read START HERE first.** Written so a fresh session (or a future you) can pick up
 without re-deriving anything.
+
+---
+
+## START HERE (written 2026-11-02 for a fresh context window)
+
+Everything a new session needs, in one place. Older sections below are history
+and evidence; this section is the current truth.
+
+### The machine and how to reach it
+
+* Orange Pi Zero 3W, Allwinner **A733 (`sun60iw2`)**, 8 cores, 6 GB, Ubuntu,
+  kernel `6.6.98-sun60iw2`. **No RTC** — clock is days stale until NTP; log
+  timestamps before the step are wrong. journald is **volatile** (wiped at
+  reboot). `~/netaudit/` persists what matters (see below).
+* User `orangepi`. `sudo -n` without password ONLY for
+  `apt-get systemctl udevadm usermod reboot` and the two repo install scripts.
+  Anything else in `/etc` needs the user. (Units live in home dirs and are
+  `systemctl link`ed; **`systemctl disable` on a linked unit deletes the link —
+  re-`link` afterwards.**)
+* Addresses: Tailscale **100.92.72.14** (stable, use this), MagicDNS `orangepi`
+  (does not resolve via the phone hotspot's DNS). Home Wi-Fi `TP-Link_FD78_5G`
+  → 192.168.1.146. Phone hotspot `Burkephone` (Galaxy S24 Ultra) → 10.204.231.x.
+  Wi-Fi priority in `/etc/wifi-failsafe.conf`: Burkephone 100 > GL-MT3000 90 >
+  TP-Link 80 > GL-MT6000 70 — the Pi prefers the phone whenever it is on.
+* Tailscale **1.104.4**, `--tun=userspace-networking`: the Pi cannot dial its
+  own 100.x address; inbound connections show as 127.0.0.1 in `ss`.
+* Laptops: Mission Planner is **`win11rogasus` 100.123.80.42**. The Surface
+  `win11surfacepro` 100.109.85.83 is a different machine. Phone 100.96.100.123.
+* Resume: `cd ~/mlinstall/installmavlinkrouterorangepizero3w && claude --model fable`
+  (fresh context by request; `--continue` restores the old window and its model).
+* A `tailscaled` restart/upgrade kills a Claude session running over the
+  tailnet. Do it last or from the LAN.
+
+### Services (all enabled at boot unless noted)
+
+| service | what | port | notes |
+|---|---|---|---|
+| `mavlink-router` | FC `/dev/ttyS2` @ **57600** ↔ TCP :5678 + **UDP server :14550** | 5678, 14550 | config `/etc/mavlink-router/main.conf` (copy in `~/inbox/main.conf`) |
+| `camstream-rtsp` | **boot default camera mode**: mediamtx + ffmpeg, H.264 **1280x720@30 1.5 Mbit/s**, pull `rtsp://100.92.72.14:8554/cam` | 8554 | `~/camstream/mediamtx.yml` (presets commented) |
+| `camstream` | MJPEG + overlay page, LAN only, 15 Mbit/s | 8080 | linked, not enabled; `mode.sh mjpeg` |
+| `camstream-h264` | RTP push to a fixed laptop IP (MP default pipeline) | →5600 | linked, not enabled; user rejected push; `h264.env` still points at the Surface |
+| `netaudit` | persists tailscaled/NM/service logs + 30 s health CSV | — | `~/netaudit/journal.log`, `health.csv` |
+| `check_wifi` (boot) | wifi-failsafe; hotspot `OPiRescue` after ~5 min 45 s with no known SSID | — | repo `OrangePiHotspotIfNoWifi` |
+
+Camera modes are **exclusive by decision** (`Conflicts=`), switch with
+`~/camstream/mode.sh mjpeg|h264|rtsp|status`. Do not build a splitter.
+
+### Mission Planner (working, confirmed 2026-11-01 ~23:30)
+
+* Telemetry: connection type **UDPCl**, host 100.92.72.14, port 14550. Healthy
+  at ~77 pkt/s each way; relayed via DERP lax at 14 ms when the laptop is off-LAN.
+* Video: Flight Data → right-click HUD → Video → Set GStreamer Source → paste
+  **`~/inbox/mp_pipeline.txt`** (one line, `latency=100`, `do-rtcp=false
+  buffer-mode=none`, ends `appsink name=outsink sync=false`). **Copy from
+  Notepad**; a wrapped paste breaks it silently. Restart MP if an old pipeline
+  lingers. VLC: `rtsp://100.92.72.14:8554/cam` (its 1 s lag is VLC's cache).
+* Measured with video + telemetry: **2.0 Mbit/s out**, 0.2 in, encoder 112% of
+  one core, load 1.8/8 ⇒ ~900 MB/h on cellular. Presets 800x600 (~1.4) and
+  640x480 (~0.9) are in `mediamtx.yml`.
+
+### Deliverables (in `~/inbox/`, copies in `~/camstream/`)
+
+* `HelloWorldOrangePiUSBcamFall2026.docx` / `.pdf` — the student tutorial,
+  **rewritten 2026-11-02** for the final configuration: Phase I verify camera,
+  II browser MJPEG, **III install both services + mode switch + overlay**,
+  **IV Mission Planner via RTSP (UDPCl telemetry note, pipeline table)**,
+  quality presets with measured CPU/bandwidth, troubleshooting incl. the
+  banding causes, appendix. Built from the course template by
+  `~/camstream/build_tutorial.py`; PDF via `soffice --headless --convert-to pdf`.
+  No grading/Canvas (user's decision). Pictures on page 2, directions from 3.
+* `camstream-files.zip` — the student config set (both units, mediamtx.yml,
+  mode.sh, mp_pipeline.txt, www/index.html, README). Not the mediamtx binary.
+* `main.conf` — full mavlink-router config incl. the UDP server block and the
+  commented-out `Baud = 500000` with the UART note.
+* `Params08Aug2026_CRSF.param` — the class FC config from Canvas.
+
+### Open items, in priority order
+
+1. **Demo rules** (derived from the tailnet audit): phone **Wi-Fi OFF** for the
+   whole demo so the hotspot stays on cellular; RTSP mode; UDPCl telemetry;
+   `tcp_retries2 = 8` is applied. Rehearsal not yet done: Pi on hotspot, phone
+   Wi-Fi ON at a known time → expect tailscaled control to recover in ~100 s
+   (was 16 min); `netaudit` records it.
+2. **Tailscale control-stall bug** is upstream and NOT fixed in 1.104.4:
+   PRs #21834 / #20618, issue #12021. Watch for them; estimate months.
+3. **Thursday 2026-10-29 demo disconnects** could not be audited (volatile
+   journal). User can run
+   `sudo zcat -f /var/log/syslog* | grep "^2026-10-29" | grep -iE "tailscaled|NetworkManager|wpa_supplicant" > ~/inbox/thursday.log`
+   and I analyse. Likely chain: phone joining/leaving campus Wi-Fi while
+   carried away → hotspot upstream flips (bug) or hotspot drops (One UI).
+4. **Baud, on the back burner**: this Pi's UART (24 MHz / 16 / integer divisor)
+   can do 57600, 115200, **500000**, 1500000 exactly; **460800 and 921600
+   cannot be generated** (+8.5% / −18.6% error). The class file's
+   `SERIAL2_BAUD = 460` is wrong for Orange Pi → suggest **500** for the Canvas
+   notes. Procedure: set FC `SERIAL2_BAUD=500` (and SERIAL3), edit
+   `Baud = 500000`, restart router, power-cycle FC. Fallback is USB + MP.
+5. Live FC deviates from the class file (`SERIAL6_PROTOCOL` 2 vs 23,
+   `RSSI_TYPE` 5 vs 3). Full param diff offered, not run.
+6. Still unverified: `.BIN` statustext timestamps from `dronefly.py` (no RTC;
+   use FC `SYSTEM_TIME` instead); FC battery failsafe `BATT_FS_LOW_ACT/CRT_ACT`
+   are **0** — set them before students fly the LLM autoland.
+7. journald could be made persistent (`Storage=persistent`, bigger
+   `SystemMaxUse`) with the user's sudo; `netaudit` covers the gap meanwhile.
+
+### Things that bit us (do not repeat)
+
+* Camera: `lsusb` says "Microdia Wireless Mouse" — it is the camera.
+  `kill -9` on a streaming process wedges the UVC device; only a replug fixes it.
+  `After=dev-video0.device` hangs `systemctl start` forever on this board.
+* MJPEG from this camera is 15 Mbit/s at 480p (fixed JPEG quality); 720p is 36.
+* Mission Planner banding: line-wrapped paste, old pipeline still alive,
+  `latency=0`, RTCP timestamp rebasing, multi-slice frames — all fixed/avoided.
+* `pkill -f <word>` kills the script containing the word; use `pkill -x`.
+* Phone hotspot sharing home Wi-Fi puts one radio on two jobs: p90 78 ms jitter.
+* Carrier CGNAT drops idle IPv4 TCP at ~60–75 s; IPv6 has no NAT. **Do not
+  disable IPv6 on the Pi.**
+* Raw UVC JPEGs lack JFIF; python-docx rejects them — convert to PNG.
+* The reboot wipes `/tmp` and the Claude scratchpad; keep artefacts in home.
 
 ---
 
