@@ -1,14 +1,31 @@
 # Handoff — state of play
 
-Last updated: 2026-11-02 — **the next session starts with a fresh context window; read START HERE first.** Written so a fresh session (or a future you) can pick up
+Last updated: 2026-11-11 — **the next session starts with a fresh context window; read START HERE first.** Written so a fresh session (or a future you) can pick up
 without re-deriving anything.
 
 ---
 
-## START HERE (written 2026-11-02 for a fresh context window)
+## START HERE (written 2026-11-02, snapshot refreshed 2026-11-11, for a fresh context window)
 
 Everything a new session needs, in one place. Older sections below are history
 and evidence; this section is the current truth.
+
+### Snapshot 2026-11-11 18:07 UTC (verified live, nothing changed since 2 Nov)
+
+* Board rebooted 17:41, up 26 min, all services came back on their own:
+  `mavlink-router` active, `camstream-rtsp` active (boot default), `camstream`
+  and `camstream-h264` inactive as intended, `netaudit` active (333 samples).
+* Wi-Fi: **`GL-MT3000-e23`** (the GL.iNet travel router, 192.168.8.143) —
+  not the phone, not the home router. Tailscale 1.104.4, health OK, 100.92.72.14.
+* **Flight controller is powered and connected**: heartbeat on :5678, mode
+  STABILIZE, still 57600 baud.
+* `tcp_retries2 = 8` survived the reboot.
+* `netaudit` laptop ping shows `timeout` — the MP laptop (win11rogasus) is
+  simply off/asleep, not a fault.
+* Nothing in `~/inbox/` is newer than 2 Nov; the tutorial PDF/docx (15 pages,
+  footer Nov. 2) and `camstream-files.zip` are the final deliverables.
+* The only edit after the 2 Nov handoff was the tutorial footer date
+  (Nov. 1 → Nov. 2) and a rebuild; no config changed.
 
 ### The machine and how to reach it
 
